@@ -1,0 +1,24 @@
+pd.set_option('display.float_format', lambda x: f'{x:.10f}')
+
+# Your existing code
+compare = pd.concat([df_1, df_2], axis=1)
+compare.fillna('X', inplace=True)
+dif = compare.iloc[:, :7] == compare.iloc[:, 7:]
+dif.replace({False: 'X', True: ' '}, inplace=True)
+df_mask = compare.iloc[:, :7].compare(compare.iloc[:, 7:], keep_shape=True).notnull().astype('int').rename(columns={'self': 'Data_q1', 'other': 'Data_q2'}, level=-1)
+df_compare = compare.iloc[:, :7].compare(compare.iloc[:, 7:], keep_shape=True, keep_equal=True).rename(columns={'self': 'Data_q1', 'other': 'Data_q2'}, level=-1)
+
+def apply_color(x):
+    colors = {1: 'lightyellow', 0: 'white'}
+    return df_mask.applymap(lambda val: 'background-color: {}'.format(colors.get(val,'')))
+
+# Modify the styling to preserve full precision
+def format_float(val):
+    if isinstance(val, float):
+        return f'{val:.10f}'
+    return val
+
+data_compare = df_compare.style.apply(apply_color, axis=None).format(format_float)
+
+# Display the result
+display(data_compare)
