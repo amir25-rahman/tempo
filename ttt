@@ -42,33 +42,32 @@ for i, (index, row) in enumerate(df.iterrows()):
 # Customize the plot
 ax.set_yticks(range(len(y_ticks)))
 ax.set_yticklabels(y_ticks, fontsize=8)
-ax.set_xlabel('Days until Due', fontsize=12, fontweight='bold', color='#012169')
 ax.set_title('Task Duration from Start to Due Date', fontsize=14, fontweight='bold', color='#012169')
 
-# Format x-axis to show number of days
+# Format x-axis to show dates
 max_days = (end_date - start_date).days + 1
 ax.set_xlim(0, max_days)
-ax.xaxis.set_major_locator(plt.MultipleLocator(7))  # Major tick every 7 days
-ax.xaxis.set_minor_locator(plt.MultipleLocator(1))  # Minor tick every day
 
-# Add a secondary x-axis for dates
-ax2 = ax.twiny()
-ax2.set_xlim(ax.get_xlim())
-ax2.set_xticks(range(0, max_days, 7))
-ax2.set_xticklabels([(start_date + timedelta(days=x)).strftime('%m/%d/%y') for x in range(0, max_days, 7)])
-ax2.set_xlabel('Date', fontsize=12, fontweight='bold', color='#012169')
+# Set up the date formatter
+date_formatter = mdates.DateFormatter("%m/%d")  # Month/Day format
+date_locator = mdates.WeekdayLocator(byweekday=mdates.MO)  # Locate Mondays
+
+# Set x-axis ticks to show dates
+ax.xaxis.set_major_locator(date_locator)
+ax.xaxis.set_major_formatter(date_formatter)
+
+# Set x-axis label
+ax.set_xlabel('Due Date', fontsize=12, fontweight='bold', color='#012169')
 
 # Remove spines
 for spine in ax.spines.values():
-    spine.set_visible(False)
-for spine in ax2.spines.values():
     spine.set_visible(False)
 
 # Add gridlines
 ax.xaxis.grid(True, linestyle=':', alpha=0.7, color='#CCCCCC')
 
 # Rotate and align the tick labels so they look better
-fig.autofmt_xdate()
+fig.autofmt_xdate(rotation=45, ha='right')
 
 # Add legend
 legend_elements = [plt.Rectangle((0,0),1,1, facecolor=color, edgecolor='none', alpha=0.8) for color in color_map.values()]
