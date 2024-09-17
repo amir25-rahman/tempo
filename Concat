@@ -1,0 +1,15 @@
+def combine_rows(group):
+    left = group[group['Change'] == '*left'].iloc[0]
+    right = group[group['Change'] == '*right'].iloc[0]
+    return pd.Series({
+        'ID': left['ID'],
+        'Type_left': left['Type'],
+        'Date_left': left['Date'],
+        'Change_left': left['Change'],
+        'Type_right': right['Type'],
+        'Date_right': right['Date'],
+        'Change_right': right['Change']
+    })
+
+# Group by ID and apply the combine_rows function
+result = df.groupby('ID').apply(combine_rows).reset_index(drop=True)
