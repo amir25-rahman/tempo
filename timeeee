@@ -1,8 +1,9 @@
+import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 import re
 
-# Function to parse duration strings into timedelta
+# Function to parse duration strings into timedelta or business day offset
 def parse_duration(duration):
     if not isinstance(duration, str):
         return None  # Return None for invalid duration values
@@ -17,7 +18,6 @@ def parse_duration(duration):
         duration = duration[1:]
     
     # Regex to extract numbers and their units (y: years, mo: months, w: weeks, d: days, h: hours, m: minutes)
-    # We need to ensure 'mo' for months is matched as a whole
     matches = re.findall(r'(\d+)(y|mo|w|d|h|m)', duration)
     
     for value, unit in matches:
@@ -34,16 +34,33 @@ def parse_duration(duration):
         elif unit == 'm':
             time_values['m'] = int(value)
     
-    # Convert the values into a timedelta
+    # Get the current date
+    current_date = pd.Timestamp.now(pytz.timezone('US/Pacific'))
+    
+    # Calculate total days (approximating months and years, but adjusting days and weeks for business days)
     days_in_year = 365
     days_in_month = 30
-    total_days = time_values['y'] * days_in_year + time_values['mo'] * days_in_month + time_values['w'] * 7 + time_values['d']
+    total_days = time_values['y'] * days_in_year + time_values['mo'] * days_in_month
     
-    td = timedelta(days=total_days, hours=time_values['h'], minutes=time_values['m'])
+    # Adjust for business days (weeks and days)
+    business_days = pd.offsets.BusinessDay(n=(time_values['w'] * 5 + time_values['d']))
+    if negative:
+        result_date = current_date - business_days
+    else:
+        result_date = current_date + business_days
+
+    # Add years and months (approximate) after calculating business days
+    result_date = result_date + pd.DateOffset(years=time_values['y'], months=time_values['mo'])
     
-    # Return negative timedelta if it's a past duration
-    return -td if negative else td
+    # Adjust for hours and minutes
+    result_date = result_date + timedelta(hours=time_values['h'], minutes=time_values['m'])
+    
+    return result_date
 
 # Get the current date and time in PST
 pst = pytz.timezone('US/Pacific')
 now_pst = datetime.now(pst)
+
+# Create a DataFrame with your data
+data = {
+    'ID': [111, 222, 333, 444, 555, 666, 777, 888, 999, 999
