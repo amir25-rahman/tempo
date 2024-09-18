@@ -14,8 +14,7 @@ def combine_rows(group):
 # Group by ID and apply the combine_rows function
 result = df.groupby('ID').apply(combine_rows).reset_index(drop=True)
 
-
-#######################################
+####################
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
@@ -23,6 +22,9 @@ import re
 
 # Function to parse duration strings into timedelta
 def parse_duration(duration):
+    if not isinstance(duration, str):
+        return None  # Return None for invalid duration values
+
     # Dictionary to store the time values
     time_values = {'w': 0, 'd': 0, 'h': 0, 'm': 0}
     
@@ -59,8 +61,11 @@ data = {
 
 df = pd.DataFrame(data)
 
+# Ensure that all durations are strings and handle NaN or invalid values
+df['Duration'] = df['Duration'].astype(str)
+
 # Apply the duration parsing and add the new 'Exact Date and Time' column
-df['Exact Date and Time (PST)'] = df['Duration'].apply(lambda x: (now_pst + parse_duration(x)).strftime('%Y-%m-%d %H:%M:%S'))
+df['Exact Date and Time (PST)'] = df['Duration'].apply(lambda x: (now_pst + parse_duration(x)).strftime('%Y-%m-%d %H:%M:%S') if parse_duration(x) else 'Invalid Duration')
 
 # Display the updated DataFrame
 print(df)
