@@ -13,3 +13,54 @@ def combine_rows(group):
 
 # Group by ID and apply the combine_rows function
 result = df.groupby('ID').apply(combine_rows).reset_index(drop=True)
+
+
+#######################################
+import pandas as pd
+from datetime import datetime, timedelta
+import pytz
+import re
+
+# Function to parse duration strings into timedelta
+def parse_duration(duration):
+    # Dictionary to store the time values
+    time_values = {'w': 0, 'd': 0, 'h': 0, 'm': 0}
+    
+    # Check if the duration is negative (past time)
+    negative = False
+    if duration.startswith('-'):
+        negative = True
+        duration = duration[1:]
+    
+    # Regex to extract numbers and their units (w: weeks, d: days, h: hours, m: minutes)
+    matches = re.findall(r'(\d+)([wdhm])', duration)
+    
+    for value, unit in matches:
+        time_values[unit] = int(value)
+    
+    # Create timedelta object
+    td = timedelta(weeks=time_values['w'], days=time_values['d'], 
+                   hours=time_values['h'], minutes=time_values['m'])
+    
+    # Return negative timedelta if it's a past duration
+    return -td if negative else td
+
+# Get the current date and time in PST
+pst = pytz.timezone('US/Pacific')
+now_pst = datetime.now(pst)
+
+# Create a DataFrame with your data
+data = {
+    'ID': [111, 222, 333, 444, 555, 666, 777, 888, 999, 999],
+    'Type': ['AA', 'AA', 'AA', 'BB', 'BB', 'BB', 'BB', 'CC', 'CC', 'CC'],
+    'Change': ['BB', 'BB', 'BB', 'CC', 'CC', 'CC', 'CC', 'DD', 'DD', 'DD'],
+    'Duration': ['-3w 3d', '25m', '4h 3m', '-5m', '-8h', '-8m', '-5w 2d', '-5w 2d', '-5w 2d', '-5w 2d']
+}
+
+df = pd.DataFrame(data)
+
+# Apply the duration parsing and add the new 'Exact Date and Time' column
+df['Exact Date and Time (PST)'] = df['Duration'].apply(lambda x: (now_pst + parse_duration(x)).strftime('%Y-%m-%d %H:%M:%S'))
+
+# Display the updated DataFrame
+print(df)
