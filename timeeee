@@ -1,0 +1,49 @@
+from datetime import datetime, timedelta
+import pytz
+import re
+
+# Function to parse duration strings into timedelta
+def parse_duration(duration):
+    if not isinstance(duration, str):
+        return None  # Return None for invalid duration values
+
+    # Dictionary to store the time values, including months and years
+    time_values = {'y': 0, 'mo': 0, 'w': 0, 'd': 0, 'h': 0, 'm': 0}
+    
+    # Check if the duration is negative (past time)
+    negative = False
+    if duration.startswith('-'):
+        negative = True
+        duration = duration[1:]
+    
+    # Regex to extract numbers and their units (y: years, mo: months, w: weeks, d: days, h: hours, m: minutes)
+    # We need to ensure 'mo' for months is matched as a whole
+    matches = re.findall(r'(\d+)(y|mo|w|d|h|m)', duration)
+    
+    for value, unit in matches:
+        if unit == 'y':
+            time_values['y'] = int(value)
+        elif unit == 'mo':
+            time_values['mo'] = int(value)
+        elif unit == 'w':
+            time_values['w'] = int(value)
+        elif unit == 'd':
+            time_values['d'] = int(value)
+        elif unit == 'h':
+            time_values['h'] = int(value)
+        elif unit == 'm':
+            time_values['m'] = int(value)
+    
+    # Convert the values into a timedelta
+    days_in_year = 365
+    days_in_month = 30
+    total_days = time_values['y'] * days_in_year + time_values['mo'] * days_in_month + time_values['w'] * 7 + time_values['d']
+    
+    td = timedelta(days=total_days, hours=time_values['h'], minutes=time_values['m'])
+    
+    # Return negative timedelta if it's a past duration
+    return -td if negative else td
+
+# Get the current date and time in PST
+pst = pytz.timezone('US/Pacific')
+now_pst = datetime.now(pst)
