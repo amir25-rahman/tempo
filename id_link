@@ -1,0 +1,42 @@
+import openpyxl
+from openpyxl.styles import Font
+from openpyxl.worksheet.hyperlink import Hyperlink
+
+# Create a new workbook and select the active sheet
+wb = openpyxl.Workbook()
+sheet = wb.active
+
+# Define the headers
+headers = ['ID', 'Type', 'Change']
+for col, header in enumerate(headers, start=1):
+    sheet.cell(row=1, column=col, value=header)
+
+# Define the data
+data = [
+    (111, 'AA', 'BB'),
+    (222, 'AA', 'BB'),
+    (333, 'AA', 'BB'),
+    (444, 'BB', 'CC'),
+    (555, 'BB', 'CC'),
+    (666, 'BB', 'CC'),
+    (777, 'BB', 'CC'),
+    (888, 'CC', 'DD'),
+    (999, 'CC', 'DD'),
+    (999, 'CC', 'DD')
+]
+
+# Write the data and create hyperlinks
+for row, (id, type, change) in enumerate(data, start=2):
+    # ID column with hyperlink
+    cell = sheet.cell(row=row, column=1, value=id)
+    cell.hyperlink = f"https://google.com/{id}"
+    cell.font = Font(color="0000FF", underline="single")  # Blue, underlined text
+    
+    # Type and Change columns
+    sheet.cell(row=row, column=2, value=type)
+    sheet.cell(row=row, column=3, value=change)
+
+# Save the workbook
+wb.save('output.xlsx')
+
+print("Excel file 'output.xlsx' has been created with hyperlinks in the ID column.")
