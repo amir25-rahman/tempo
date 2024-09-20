@@ -4,30 +4,50 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Font
 from openpyxl.worksheet.hyperlink import Hyperlink
 
-# Sample data
-data = {
-    'Date': ['24-Sep', '23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun'],
-    'Name': ['BOB', 'Amy', 'Jon', 'HHH', 'Moh', 'KL', 'JW', 'FF', 'vD', 'Vde'],
-    'ID': [111, 222, 333, 444, 555, 666, 777, 888, 999, 999],
-    'Sev': ['M', 'H', 'S', 'L', 'H', 'L', 'W', 'L', 'w', 'G'],
-    'Type': ['AA', 'AA', 'AA', 'BB', 'BB', 'BB', 'BB', 'CC', 'CC', 'CC'],
-    'Change': ['BB', 'BB', 'BB', 'CC', 'CC', 'CC', 'CC', 'DD', 'DD', 'DD']
+# Sample data for DataFrames
+data1 = {
+    'Date': ['24-Sep', '23-Jun', '23-Jun', '23-Jun', '23-Jun'],
+    'Name': ['BOB', 'Amy', 'Jon', 'HHH', 'Moh'],
+    'ID': [111, 222, 333, 444, 555],
+    'Sev': ['M', 'H', 'S', 'L', 'H'],
+    'Type': ['AA', 'AA', 'AA', 'BB', 'BB'],
+    'Change': ['BB', 'BB', 'BB', 'CC', 'CC']
 }
 
-# Create DataFrame
-df = pd.DataFrame(data)
+data2 = {
+    'Date': ['23-Jun', '23-Jun', '23-Jun', '23-Jun', '23-Jun'],
+    'Name': ['KL', 'JW', 'FF', 'vD', 'Vde'],
+    'ID': [666, 777, 888, 999, 999],
+    'Sev': ['L', 'W', 'L', 'w', 'G'],
+    'Type': ['BB', 'BB', 'CC', 'CC', 'CC'],
+    'Change': ['CC', 'CC', 'DD', 'DD', 'DD']
+}
+
+# Convert to DataFrames
+df1 = pd.DataFrame(data1)
+df2 = pd.DataFrame(data2)
 
 # Define Excel file path
-file_path = "/mnt/data/output.xlsx"
+file_path = "/mnt/data/output_with_spacing.xlsx"
 
 # Create Excel writer
 with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-    df.to_excel(writer, index=False, sheet_name='Sheet1')
-    workbook = writer.book
-    sheet = workbook.active
+    start_row = 1
+    
+    # Function to write DataFrame with hyperlink in ID and add spacing
+    def write_dataframe(df, start_row, writer):
+        df.to_excel(writer, index=False, sheet_name='Sheet1', startrow=start_row)
+        sheet = writer.sheets['Sheet1']
+        
+        # Add hyperlinks to the ID column
+        for row in range(start_row + 1, start_row + len(df) + 1):
+            id_value = sheet.cell(row=row, column=3).value
+            sheet.cell(row=row, column=3).hyperlink = f"http://google.com/{id_value}"
+            sheet.cell(row=row, column=3).font = Font(color="0000FF", underline="single")
+        
+        # Return the next row to start after leaving one blank row
+        return start_row + len(df) + 2  # Add 2 for the blank row
 
-    # Add hyperlinks in ID column (2nd row, 3rd column onwards)
-    for row in range(2, len(df) + 2):
-        id_value = sheet.cell(row=row, column=3).value
-        sheet.cell(row=row, column=3).hyperlink = f"http://google.com/{id_value}"
-        sheet.cell(row=row, column=3).font = Font(color="0000FF", underline="single")
+    # Write both DataFrames to the same sheet with spacing
+    start_row = write_dataframe(df1, start_row, writer)
+    start_row = write_dataframe(df2, start_row, writer)
