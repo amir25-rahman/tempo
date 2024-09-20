@@ -35,8 +35,9 @@ with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
     start_row = 1
     
     # Function to write DataFrame with hyperlink in ID and add spacing
-    def write_dataframe(df, start_row, writer):
-        df.to_excel(writer, index=False, sheet_name='Sheet1', startrow=start_row)
+    def write_dataframe(df, start_row, writer, write_header=True):
+        # Write DataFrame to Excel without writing the header again for subsequent DataFrames
+        df.to_excel(writer, index=False, sheet_name='Sheet1', startrow=start_row, header=write_header)
         sheet = writer.sheets['Sheet1']
         
         # Add hyperlinks to the ID column
@@ -48,6 +49,8 @@ with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
         # Return the next row to start after leaving one blank row
         return start_row + len(df) + 2  # Add 2 for the blank row
 
-    # Write both DataFrames to the same sheet with spacing
-    start_row = write_dataframe(df1, start_row, writer)
-    start_row = write_dataframe(df2, start_row, writer)
+    # Write the first DataFrame with headers
+    start_row = write_dataframe(df1, start_row, writer, write_header=True)
+    
+    # Write the second DataFrame without headers
+    start_row = write_dataframe(df2, start_row, writer, write_header=False)
