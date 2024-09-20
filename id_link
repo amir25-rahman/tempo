@@ -3,9 +3,22 @@ import openpyxl
 from openpyxl.styles import Font
 from openpyxl.worksheet.hyperlink import Hyperlink
 
-# Assuming your DataFrame is named 'df'
-# If it's not, replace 'df' with the actual name of your DataFrame
-# df = pd.read_csv('your_data.csv')  # Uncomment and modify if you need to load data
+# Create DataFrame from the provided data
+data = [
+    ["24-Sep", "BOB", "111", "M", "AA", "BB"],
+    ["23-Jun", "Amy", "222", "H", "AA", "BB"],
+    ["23-Jun", "Jon", "333", "S", "AA", "BB"],
+    ["23-Jun", "HHH", "444", "L", "BB", "CC"],
+    ["23-Jun", "Moh", "555", "H", "BB", "CC"],
+    ["23-Jun", "KL", "666", "L", "BB", "CC"],
+    ["23-Jun", "JW", "777", "W", "BB", "CC"],
+    ["23-Jun", "FF", "888", "L", "CC", "DD"],
+    ["23-Jun", "vD", "999", "W", "CC", "DD"],
+    ["23-Jun", "Vde", "999", "G", "CC", "DD"]
+]
+
+columns = ["Date", "Name", "ID", "Sev", "Type", "Change"]
+df = pd.DataFrame(data, columns=columns)
 
 # Export DataFrame to Excel
 excel_file = 'output.xlsx'
