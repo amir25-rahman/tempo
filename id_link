@@ -28,26 +28,28 @@ df1 = pd.DataFrame(data1)
 df2 = pd.DataFrame(data2)
 
 # Define Excel file path
-file_path = "/mnt/data/output_with_spacing.xlsx"
+file_path = "/mnt/data/output_with_spacing_fixed.xlsx"
 
 # Create Excel writer
 with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-    start_row = 1
-    
+    start_row = 0  # Adjusted to 0 for proper placement
+
     # Function to write DataFrame with hyperlink in ID and add spacing
     def write_dataframe(df, start_row, writer, write_header=True):
-        # Write DataFrame to Excel with or without header
         df.to_excel(writer, index=False, sheet_name='Sheet1', startrow=start_row, header=write_header)
         sheet = writer.sheets['Sheet1']
         
-        # Add hyperlinks to the ID column (adjust for header row in the first DataFrame)
-        for row in range(start_row + (1 if write_header else 0) + 1, start_row + len(df) + 1):
+        # Correct the row range for applying hyperlinks
+        data_start_row = start_row + (1 if write_header else 0) + 1  # +1 for data rows, not header
+        
+        # Add hyperlinks to the ID column
+        for row in range(data_start_row, data_start_row + len(df)):
             id_value = sheet.cell(row=row, column=3).value
             sheet.cell(row=row, column=3).hyperlink = f"http://google.com/{id_value}"
             sheet.cell(row=row, column=3).font = Font(color="0000FF", underline="single")
         
         # Return the next row to start after leaving one blank row
-        return start_row + len(df) + 2  # Add 2 for the blank row
+        return data_start_row + len(df) + 1  # Leave one row as blank space
 
     # Write the first DataFrame with headers
     start_row = write_dataframe(df1, start_row, writer, write_header=True)
