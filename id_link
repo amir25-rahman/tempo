@@ -36,12 +36,12 @@ with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
     
     # Function to write DataFrame with hyperlink in ID and add spacing
     def write_dataframe(df, start_row, writer, write_header=True):
-        # Write DataFrame to Excel without writing the header again for subsequent DataFrames
+        # Write DataFrame to Excel with or without header
         df.to_excel(writer, index=False, sheet_name='Sheet1', startrow=start_row, header=write_header)
         sheet = writer.sheets['Sheet1']
         
-        # Add hyperlinks to the ID column
-        for row in range(start_row + 1, start_row + len(df) + 1):
+        # Add hyperlinks to the ID column (adjust for header row in the first DataFrame)
+        for row in range(start_row + (1 if write_header else 0) + 1, start_row + len(df) + 1):
             id_value = sheet.cell(row=row, column=3).value
             sheet.cell(row=row, column=3).hyperlink = f"http://google.com/{id_value}"
             sheet.cell(row=row, column=3).font = Font(color="0000FF", underline="single")
