@@ -10,3 +10,16 @@ else
 
 
 PastDueCount = COUNTROWS(FILTER(YourTableName, YourTableName[DueDate] < TODAY()))
+
+
+
+NewColumn = 
+IF(
+    ISBLANK(ColumnA) && ISBLANK(ColumnB), 
+    DATE(2222, 2, 2),
+    IF(
+        ISBLANK(ColumnA), 
+        IF(ColumnB = "TBD", DATE(2222, 2, 2), ColumnB), 
+        ColumnA
+    )
+)
