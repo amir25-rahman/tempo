@@ -11,15 +11,12 @@ else
 
 PastDueCount = COUNTROWS(FILTER(YourTableName, YourTableName[DueDate] < TODAY()))
 
-
-
-NewColumn = 
-IF(
-    AND(ISBLANK(ColumnA), ISBLANK(ColumnB)), 
-    DATE(2222, 2, 2),
-    IF(
-        ISBLANK(ColumnA), 
-        IF(ColumnB = "TBD", DATE(2222, 2, 2), ColumnB), 
-        ColumnA
-    )
-)
+if [ColumnA] = null and [ColumnB] = null then 
+    "02-02-2222" 
+else if [ColumnA] = null then 
+    if Text.Contains([ColumnB], "TBD") then 
+        "02-02-2222" 
+    else 
+        [ColumnB] 
+else 
+    [ColumnA]
