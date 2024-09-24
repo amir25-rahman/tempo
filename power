@@ -23,11 +23,13 @@ else
 
 
 
-
-PastDueCount = 
-CALCULATE(
-    COUNTROWS(YourTable),
-    YourTable[DueDate] < TODAY(),
-    YourTable[Status] <> "Completed"  // Modify if necessary
+DueStatus = 
+IF(
+    ISBLANK(YourTable[DueDate]),
+    "TBD",
+    IF(
+        YourTable[DueDate] < TODAY(),
+        "Past Due",
+        "Upcoming"
+    )
 )
-
