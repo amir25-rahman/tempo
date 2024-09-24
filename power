@@ -20,3 +20,14 @@ else if [ColumnA] = null then
         [ColumnB] 
 else 
     [ColumnA]
+
+
+
+
+PastDueCount = 
+CALCULATE(
+    COUNTROWS(YourTable),
+    YourTable[DueDate] < TODAY(),
+    YourTable[Status] <> "Completed"  // Modify if necessary
+)
+
