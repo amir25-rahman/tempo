@@ -23,13 +23,6 @@ else
 
 
 
-DueStatus = 
-IF(
-    ISBLANK(YourTable[DueDate]),
-    "TBD",
-    IF(
-        YourTable[DueDate] < TODAY(),
-        "Past Due",
-        "Upcoming"
-    )
-)
+if [DueDate] = null then "TBD"
+else if [DueDate] < DateTime.LocalNow() then "Past Due"
+else "Upcoming"
