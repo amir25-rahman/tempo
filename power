@@ -5,3 +5,8 @@ if [ColumnA] = null then
         [ColumnB] 
 else 
     [ColumnA]
+
+
+
+
+PastDueCount = COUNTROWS(FILTER(YourTableName, YourTableName[DueDate] < TODAY()))
