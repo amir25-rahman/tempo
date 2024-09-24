@@ -1,0 +1,7 @@
+if [ColumnA] = null then 
+    if Text.Contains([ColumnB], "TBD") then 
+        "02-02-2222" 
+    else 
+        [ColumnB] 
+else 
+    [ColumnA]
