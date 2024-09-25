@@ -1,0 +1,4 @@
+if [YourDateColumn] = #date(2222, 2, 2) then "TBD" 
+else if [YourDateColumn] < DateTime.Date(DateTime.LocalNow()) then "Past Due" 
+else if [YourDateColumn] <= DateTime.Date(DateTime.LocalNow() + #duration(14, 0, 0, 0)) then "Upcoming" 
+else "Future"
