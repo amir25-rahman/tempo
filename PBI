@@ -1,0 +1,37 @@
+let
+    Source1 = #"First Table",
+    Source2 = #"Second Table",
+    
+    // Combine the two sources
+    CombinedSources = Table.NestedJoin(Source1, {"ID"}, Source2, {"ID"}, "Matched", JoinKind.FullOuter),
+    
+    // Expand the nested table
+    ExpandedTable = Table.ExpandTableColumn(CombinedSources, "Matched", {"DUE", "Type"}, {"DUE2", "Type2"}),
+    
+    // Add a custom column to identify differences
+    AddedCustomColumn = Table.AddColumn(ExpandedTable, "Differences", each 
+        if [DUE] <> [DUE2] or [Type] <> [Type2] then
+            Text.Combine({
+                if [DUE] <> [DUE2] then "DUE: " & Date.ToText([DUE]) & " -> " & Date.ToText([DUE2]) else "",
+                if [Type] <> [Type2] then "Type: " & [Type] & " -> " & [Type2] else ""
+            }, ", ")
+        else
+            null
+    ),
+    
+    // Filter to show only rows with differences
+    FilteredDifferences = Table.SelectRows(AddedCustomColumn, each [Differences] <> null),
+    
+    // Remove unnecessary columns
+    RemovedColumns = Table.RemoveColumns(FilteredDifferences, {"NAME", "DUE2", "Type2"}),
+    
+    // Rename columns for clarity
+    RenamedColumns = Table.RenameColumns(RemovedColumns, {
+        {"DUE", "DUE (Sheet1)"},
+        {"Type", "Type (Sheet1)"}
+    }),
+    
+    // Add a column to indicate the sheet
+    AddedSheetColumn = Table.AddColumn(RenamedColumns, "Sheet", each "Sheet1/Sheet2")
+in
+    AddedSheetColumn
