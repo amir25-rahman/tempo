@@ -1,0 +1,156 @@
+let
+    // Load the workbook and specify the sheets
+    Source = Excel.Workbook(File.Contents("C:\Users\NULL\Documents\diff.xlsx"), null, true),
+
+    // Load data from Sheet1
+    Sheet1 = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+    PromotedHeaders1 = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true]),
+    RemovedDuplicates1 = Table.Distinct(Table.SelectColumns(PromotedHeaders1, {"Due", "Type", "ID"})),
+
+    // Load data from Sheet2
+    Sheet2 = Source{[Item="Sheet2", Kind="Sheet"]}[Data],
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+    RemovedDuplicates2 = Table.Distinct(Table.SelectColumns(PromotedHeaders2, {"Due", "Type", "ID"})),
+
+    // Perform Left Anti Join (unique in Sheet1)
+    LeftOnly = Table.SelectColumns(
+        Table.NestedJoin(RemovedDuplicates1, {"Due", "Type", "ID"}, RemovedDuplicates2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti), 
+        {"Due", "Type", "ID"}
+    ),
+
+    // Perform Right Anti Join (unique in Sheet2) and expand columns
+    RightOnly = Table.NestedJoin(RemovedDuplicates1, {"Due", "Type", "ID"}, RemovedDuplicates2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.RightAnti),
+    #"Expanded NewColumn" = Table.ExpandTableColumn(RightOnly, "NewColumn", {"Due", "Type", "ID"}, {"NewColumn.Due", "NewColumn.Type", "NewColumn.ID"}),
+    // Combine both unique results into a final table
+    FinalTable = Table.Combine({LeftOnly, #"Expanded NewColumn"})
+in
+    FinalTable
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+***********************************
+
+let
+    // Load the workbook and specify the sheets
+    Source = Excel.Workbook(File.Contents("C:\Users\NULL\Documents\diff.xlsx"), null, true),
+
+    // Load data from Sheet1
+    Sheet1 = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+    PromotedHeaders1 = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true]),
+    RemovedDuplicates1 = Table.Distinct(Table.SelectColumns(PromotedHeaders1, {"Due", "Type", "ID"})),
+
+    // Load data from Sheet2
+    Sheet2 = Source{[Item="Sheet2", Kind="Sheet"]}[Data],
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+    RemovedDuplicates2 = Table.Distinct(Table.SelectColumns(PromotedHeaders2, {"Due", "Type", "ID"})),
+
+    // Perform Left Anti Join (unique in Sheet1)
+    LeftOnly = Table.SelectColumns(
+        Table.NestedJoin(RemovedDuplicates1, {"Due", "Type", "ID"}, RemovedDuplicates2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti), 
+        {"Due", "Type", "ID"}
+    ),
+
+    // Perform Right Anti Join (unique in Sheet2) and select columns
+    RightOnly = Table.SelectColumns(
+        Table.NestedJoin(RemovedDuplicates2, {"Due", "Type", "ID"}, RemovedDuplicates1, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti),
+        {"Due", "Type", "ID"}
+    ),
+
+    // Combine both unique results into a final table
+    FinalTable = Table.Combine({LeftOnly, RightOnly})
+in
+    FinalTable
+
+
+
+***********************************************
+let
+    // Load the workbook and specify the sheets
+    Source = Excel.Workbook(File.Contents("C:\Users\NULL\Documents\diff.xlsx"), null, true),
+
+    // Load data from Sheet1
+    Sheet1 = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+    PromotedHeaders1 = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true]),
+    Grouped1 = Table.Group(PromotedHeaders1, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Load data from Sheet2
+    Sheet2 = Source{[Item="Sheet2", Kind="Sheet"]}[Data],
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+    Grouped2 = Table.Group(PromotedHeaders2, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Perform Left Anti Join (unique in Sheet1)
+    LeftOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped1, {"Due", "Type", "ID"}, Grouped2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti), 
+        {"Due", "Type", "ID"}
+    ),
+
+    // Perform Right Anti Join (unique in Sheet2) and select columns
+    RightOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped2, {"Due", "Type", "ID"}, Grouped1, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti),
+        {"Due", "Type", "ID"}
+    ),
+
+    // Combine both unique results into a final table
+    FinalTable = Table.Combine({LeftOnly, RightOnly})
+in
+    FinalTable
+
+
+
+********************************
+let
+    // Load the workbook and specify the sheets
+    Source = Excel.Workbook(File.Contents("C:\Users\NULL\Documents\diff.xlsx"), null, true),
+
+    // Load data from Sheet1
+    Sheet1 = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+    PromotedHeaders1 = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true]),
+    Grouped1 = Table.Group(PromotedHeaders1, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Load data from Sheet2
+    Sheet2 = Source{[Item="Sheet2", Kind="Sheet"]}[Data],
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+    Grouped2 = Table.Group(PromotedHeaders2, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Perform Left Anti Join (unique in Sheet1)
+    LeftOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped1, {"Due", "Type", "ID"}, Grouped2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti), 
+        {"Due", "Type", "ID"}
+    ),
+
+    // Perform Right Anti Join (unique in Sheet2)
+    RightOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped2, {"Due", "Type", "ID"}, Grouped1, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti),
+        {"Due", "Type", "ID"}
+    ),
+
+    // Combine both unique results into a final table
+    FinalTable = Table.Combine({LeftOnly, RightOnly}),
+
+    // Reorder the columns to ID, Due, Type
+    ReorderedFinalTable = Table.SelectColumns(FinalTable, {"ID", "Due", "Type"})
+in
+    ReorderedFinalTable
+
+
+
+
