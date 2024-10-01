@@ -1,0 +1,52 @@
+// First, create a new table that combines both sheets
+Combined_Comparison = 
+UNION(
+    SELECTCOLUMNS(
+        Sheet1,
+        "ID", Sheet1[ID],
+        "Due", Sheet1[Due],
+        "Type", Sheet1[Type],
+        "Source", "Sheet1"
+    ),
+    SELECTCOLUMNS(
+        Sheet2,
+        "ID", Sheet2[ID],
+        "Due", Sheet2[Due],
+        "Type", Sheet2[Type],
+        "Source", "Sheet2"
+    )
+)
+
+// Create a measure to identify matching rows
+Matching_Rows = 
+CALCULATE(
+    COUNTROWS(FILTER(
+        Combined_Comparison,
+        Combined_Comparison[ID] = EARLIER(Combined_Comparison[ID]) &&
+        Combined_Comparison[Due] = EARLIER(Combined_Comparison[Due]) &&
+        Combined_Comparison[Type] = EARLIER(Combined_Comparison[Type])
+    )),
+    ALL(Combined_Comparison[Source])
+)
+
+// Create measures for different scenarios
+Only_In_Sheet1 = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Sheet1" &&
+    [Matching_Rows] = 1
+)
+
+Only_In_Sheet2 = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Sheet2" &&
+    [Matching_Rows] = 1
+)
+
+In_Both_Sheets = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Sheet1" &&
+    [Matching_Rows] = 2
+)
