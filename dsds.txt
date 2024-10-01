@@ -28,6 +28,48 @@ in
 
 
 
+*************************************
+let
+    // Load the workbook and specify the sheets
+    Source = Excel.Workbook(File.Contents("C:\Users\NULL\Documents\diff.xlsx"), null, true),
+
+    // Load data from Sheet1
+    Sheet1 = Source{[Item="Sheet1", Kind="Sheet"]}[Data],
+    PromotedHeaders1 = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true]),
+    
+    // Ensure the columns are of the correct type
+    ChangedType1 = Table.TransformColumnTypes(PromotedHeaders1, {{"Due", type text}, {"Type", type text}, {"ID", type text}}),
+    
+    Grouped1 = Table.Group(ChangedType1, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Load data from Sheet2
+    Sheet2 = Source{[Item="Sheet2", Kind="Sheet"]}[Data],
+    PromotedHeaders2 = Table.PromoteHeaders(Sheet2, [PromoteAllScalars=true]),
+    
+    // Ensure the columns are of the correct type
+    ChangedType2 = Table.TransformColumnTypes(PromotedHeaders2, {{"Due", type text}, {"Type", type text}, {"ID", type text}}),
+    
+    Grouped2 = Table.Group(ChangedType2, {"Due", "Type", "ID"}, {{"Count", each Table.RowCount(_), Int64.Type}}),
+
+    // Perform Left Anti Join (unique in Sheet1)
+    LeftOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped1, {"Due", "Type", "ID"}, Grouped2, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti), 
+        {"Due", "Type", "ID"}
+    ),
+
+    // Perform Right Anti Join (unique in Sheet2)
+    RightOnly = Table.SelectColumns(
+        Table.NestedJoin(Grouped2, {"Due", "Type", "ID"}, Grouped1, {"Due", "Type", "ID"}, "NewColumn", JoinKind.LeftAnti),
+        {"Due", "Type", "ID"}
+    ),
+
+    // Combine both unique results into a final table
+    FinalTable = Table.Combine({LeftOnly, RightOnly}),
+
+    // Reorder the columns to ID, Due, Type
+    ReorderedFinalTable = Table.SelectColumns(FinalTable, {"ID", "Due", "Type"})
+in
+    ReorderedFinalTable
 
 
 
