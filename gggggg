@@ -112,3 +112,73 @@ CALCULATE(
     DISTINCTCOUNT(Combined_Comparison[ID]),
     [Matching_Rows] = 2
 )
+
+
+
+###########%###
+
+// Create a combined comparison table
+Combined_Comparison = 
+UNION(
+    SELECTCOLUMNS(
+        'Export',
+        "ID", 'Export'[ID],
+        "Due", 'Export'[Due],
+        "Type", 'Export'[Type],
+        "Source", "Export"
+    ),
+    SELECTCOLUMNS(
+        'Export_PVW',
+        "ID", 'Export_PVW'[ID],
+        "Due", 'Export_PVW'[Due],
+        "Type", 'Export_PVW'[Type],
+        "Source", "Export_PVW"
+    )
+)
+
+// Corrected Matching_Rows measure
+Matching_Rows = 
+VAR CurrentID = SELECTEDVALUE(Combined_Comparison[ID])
+VAR CurrentDue = SELECTEDVALUE(Combined_Comparison[Due])
+VAR CurrentType = SELECTEDVALUE(Combined_Comparison[Type])
+RETURN
+    CALCULATE(
+        COUNTROWS(Combined_Comparison),
+        FILTER(
+            ALLEXCEPT(Combined_Comparison, 
+                Combined_Comparison[ID],
+                Combined_Comparison[Due],
+                Combined_Comparison[Type]
+            ),
+            Combined_Comparison[ID] = CurrentID &&
+            Combined_Comparison[Due] = CurrentDue &&
+            Combined_Comparison[Type] = CurrentType
+        )
+    )
+
+// Measure for rows only in Export
+Only_In_Export = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Export",
+    [Matching_Rows] = 1
+)
+
+// Measure for rows only in Export_PVW
+Only_In_Export_PVW = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Export_PVW",
+    [Matching_Rows] = 1
+)
+
+// Measure for rows in both tables
+In_Both_Tables = 
+CALCULATE(
+    COUNTROWS(Combined_Comparison),
+    Combined_Comparison[Source] = "Export",
+    [Matching_Rows] = 2
+)
+
+
+
