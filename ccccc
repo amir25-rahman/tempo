@@ -72,3 +72,75 @@ VAR FinalResult =
 RETURN
     FinalResult
 
+
+
+
+
+
+===============================================================
+EVALUATE
+VAR Sheet1Data =
+    SELECTCOLUMNS(sheet1, 
+        "due", sheet1[due], 
+        "ID", sheet1[ID], 
+        "type", sheet1[type], 
+        "Source", "sheet1"
+    )
+
+VAR Sheet2Data =
+    SELECTCOLUMNS(sheet2, 
+        "due", sheet2[due], 
+        "ID", sheet2[ID], 
+        "type", sheet2[type], 
+        "Source", "sheet2"
+    )
+
+// Find matching rows between Sheet1 and Sheet2
+VAR MatchingRows =
+    INTERSECT(
+        SELECTCOLUMNS(Sheet1Data, "due", [due], "ID", [ID], "type", [type]),
+        SELECTCOLUMNS(Sheet2Data, "due", [due], "ID", [ID], "type", [type])
+    )
+
+// Find non-matching rows in Sheet1
+VAR NonMatchingFromSheet1 =
+    EXCEPT(
+        SELECTCOLUMNS(Sheet1Data, "due", [due], "ID", [ID], "type", [type]),
+        SELECTCOLUMNS(MatchingRows, "due", [due], "ID", [ID], "type", [type])
+    )
+
+// Find non-matching rows in Sheet2
+VAR NonMatchingFromSheet2 =
+    EXCEPT(
+        SELECTCOLUMNS(Sheet2Data, "due", [due], "ID", [ID], "type", [type]),
+        SELECTCOLUMNS(MatchingRows, "due", [due], "ID", [ID], "type", [type])
+    )
+
+// Create a variable for IDs in non-matching rows
+VAR NonMatchingIDsFromSheet1 =
+    DISTINCT(SELECTCOLUMNS(NonMatchingFromSheet1, "ID", [ID]))
+
+VAR NonMatchingIDsFromSheet2 =
+    DISTINCT(SELECTCOLUMNS(NonMatchingFromSheet2, "ID", [ID]))
+
+// Get matching rows from the other source for non-matching IDs
+VAR AdditionalMatchesFromSheet2 =
+    FILTER(Sheet2Data, [ID] IN NonMatchingIDsFromSheet1)
+
+VAR AdditionalMatchesFromSheet1 =
+    FILTER(Sheet1Data, [ID] IN NonMatchingIDsFromSheet2)
+
+// Combine non-matching rows with additional matches
+VAR CombinedResults =
+    UNION(
+        SELECTCOLUMNS(NonMatchingFromSheet1, "due", [due], "ID", [ID], "type", [type], "Source", "sheet1"),
+        SELECTCOLUMNS(NonMatchingFromSheet2, "due", [due], "ID", [ID], "type", [type], "Source", "sheet2"),
+        SELECTCOLUMNS(AdditionalMatchesFromSheet2, "due", [due], "ID", [ID], "type", [type], "Source", "sheet2"),
+        SELECTCOLUMNS(AdditionalMatchesFromSheet1, "due", [due], "ID", [ID], "type", [type], "Source", "sheet1")
+    )
+
+VAR FinalResult =
+    DISTINCT(CombinedResults)
+
+RETURN
+    FinalResult
