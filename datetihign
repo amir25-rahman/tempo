@@ -44,18 +44,18 @@ def parse_duration(duration):
     # Return negative timedelta if it's a past duration
     return -td if negative else td
 
-# Function to add days skipping weekends
-def add_business_days(start_date, days):
-    current_date = start_date
-    business_days_added = 0
-    delta = timedelta(days=1 if days >= 0 else -1)
-
-    while business_days_added != days:
-        current_date += delta
-        if current_date.weekday() < 5:  # Monday to Friday are < 5
-            business_days_added += 1 if days >= 0 else -1
-    
-    return current_date
+# Function to move date back by one business day
+def move_back_one_business_day(date):
+    # If the date falls on a Monday, move back to Friday
+    if date.weekday() == 0:
+        return date - timedelta(days=3)
+    # If the date falls on a weekend, move to the previous Friday
+    elif date.weekday() == 5:  # Saturday
+        return date - timedelta(days=1)
+    elif date.weekday() == 6:  # Sunday
+        return date - timedelta(days=2)
+    else:
+        return date - timedelta(days=1)
 
 # Get the current date and time in PST
 pst = pytz.timezone('US/Pacific')
@@ -74,9 +74,9 @@ df = pd.DataFrame(data)
 # Ensure that all durations are strings and handle NaN or invalid values
 df['Duration'] = df['Duration'].astype(str)
 
-# Apply the duration parsing and add the new 'Exact Date and Time' column, adjusting for business days
+# Apply the duration parsing, adjust for business days, and add the new 'Exact Date and Time' column
 df['Exact Date and Time (PST)'] = df['Duration'].apply(
-    lambda x: (add_business_days(now_pst, parse_duration(x).days) + timedelta(hours=parse_duration(x).seconds // 3600, minutes=(parse_duration(x).seconds % 3600) // 60)).strftime('%Y-%m-%d %H:%M:%S') 
+    lambda x: move_back_one_business_day(now_pst + parse_duration(x)).strftime('%Y-%m-%d %H:%M:%S')
     if parse_duration(x) else 'Invalid Duration'
 )
 
