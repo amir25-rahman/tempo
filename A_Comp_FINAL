@@ -49,3 +49,60 @@ VAR Export_PVWData =
 
 RETURN
     UNION(ExportData, Export_PVWData)
+
+
+
+
+
+###########################################
+EVALUATE
+VAR Sheet1Data =
+    ADDCOLUMNS(
+        FILTER(
+            SUMMARIZE(
+                Sheet1,
+                Sheet1[id],
+                Sheet1[due],
+                Sheet1[type],
+                Sheet1[AD]  // Include the AD column from Sheet1
+            ),
+            NOT (
+                COUNTROWS(
+                    FILTER(
+                        Sheet2,
+                        Sheet2[id] = EARLIER(Sheet1[id]) &&
+                        Sheet2[due] = EARLIER(Sheet1[due]) &&
+                        Sheet2[type] = EARLIER(Sheet1[type])
+                    )
+                ) > 0
+            )
+        ),
+        "Source", "Sheet1"
+    )
+
+VAR Sheet2Data =
+    ADDCOLUMNS(
+        FILTER(
+            SUMMARIZE(
+                Sheet2,
+                Sheet2[id],
+                Sheet2[due],
+                Sheet2[type],
+                Sheet2[AD]  // Include the AD column from Sheet2
+            ),
+            NOT (
+                COUNTROWS(
+                    FILTER(
+                        Sheet1,
+                        Sheet1[id] = EARLIER(Sheet2[id]) &&
+                        Sheet1[due] = EARLIER(Sheet2[due]) &&
+                        Sheet1[type] = EARLIER(Sheet2[type])
+                    )
+                ) > 0
+            )
+        ),
+        "Source", "Sheet2"
+    )
+
+RETURN
+    UNION(Sheet1Data, Sheet2Data)
