@@ -1,0 +1,51 @@
+EVALUATE
+VAR ExportData =
+    ADDCOLUMNS(
+        FILTER(
+            SUMMARIZE(
+                Export,
+                Export[id],
+                Export[due],
+                Export[type],
+                Export[AD]  // Include the AD column from Export
+            ),
+            NOT (
+                COUNTROWS(
+                    FILTER(
+                        Export_PVW,
+                        Export_PVW[id] = EARLIER(Export[id]) &&
+                        Export_PVW[due] = EARLIER(Export[due]) &&
+                        Export_PVW[type] = EARLIER(Export[type])
+                    )
+                ) > 0
+            )
+        ),
+        "Source", "Export"
+    )
+
+VAR Export_PVWData =
+    ADDCOLUMNS(
+        FILTER(
+            SUMMARIZE(
+                Export_PVW,
+                Export_PVW[id],
+                Export_PVW[due],
+                Export_PVW[type],
+                Export_PVW[AD]  // Include the AD column from Export_PVW
+            ),
+            NOT (
+                COUNTROWS(
+                    FILTER(
+                        Export,
+                        Export[id] = EARLIER(Export_PVW[id]) &&
+                        Export[due] = EARLIER(Export_PVW[due]) &&
+                        Export[type] = EARLIER(Export_PVW[type])
+                    )
+                ) > 0
+            )
+        ),
+        "Source", "Export_PVW"
+    )
+
+RETURN
+    UNION(ExportData, Export_PVWData)
