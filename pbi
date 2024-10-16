@@ -1,4 +1,10 @@
-= if [due] = null then "02-02-222" 
-  else if [max_date] = "TDB" then "02-02-222" 
-  else if [lifecycle] = "dis" then [max_date] 
-  else [due]
+NewColumn = 
+IF(
+    (ISBLANK([Due]) && ISBLANK([Max])) || ([Lifecycle] = "dis" && [Max] = "TBD"),
+    DATE(2222, 2, 2),
+    IF(
+        [Lifecycle] = "dis",
+        [Max],
+        [Due]
+    )
+)
