@@ -1,0 +1,11 @@
+NewColumn = 
+IF(
+    'YourTable'[Life] = "DE",
+    'YourTable'[MaxC],
+    IF(
+        ISBLANK('YourTable'[DueDate]) && 
+        (ISBLANK('YourTable'[MaxC]) || 'YourTable'[MaxC] = "TBD"),
+        DATE(2222, 2, 2),
+        'YourTable'[DueDate]  // Replace with the desired value if the conditions are not met
+    )
+)
