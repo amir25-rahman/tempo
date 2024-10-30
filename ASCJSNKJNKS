@@ -1,0 +1,77 @@
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font
+
+def export_dataframes_to_excel(dataframes_dict, output_file):
+    """
+    Export multiple dataframes to Excel with blue headers, white font, filters, and auto-fitted columns
+    
+    Parameters:
+    dataframes_dict (dict): Dictionary with sheet names as keys and dataframes as values
+    output_file (str): Name of the output Excel file
+    """
+    # First export all dataframes
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for sheet_name, df in dataframes_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    
+    # Then load the workbook to apply formatting
+    workbook = load_workbook(output_file)
+    
+    # Process each worksheet
+    for sheet_name in workbook.sheetnames:
+        worksheet = workbook[sheet_name]
+        
+        # Format header row
+        blue_fill = PatternFill(start_color='0000FF', end_color='0000FF', fill_type='solid')
+        white_font = Font(color='FFFFFF', bold=True)
+        
+        # Apply formatting to header row
+        for cell in worksheet[1]:
+            cell.fill = blue_fill
+            cell.font = white_font
+        
+        # Add filters to all columns
+        max_row = worksheet.max_row
+        max_col = worksheet.max_column
+        worksheet.auto_filter.ref = f"A1:{chr(64 + max_col)}{max_row}"
+        
+        # Use openpyxl's column auto-fit
+        for column in worksheet.columns:
+            max_length = 0
+            worksheet.column_dimensions[column[0].column_letter].bestFit = True
+            worksheet.column_dimensions[column[0].column_letter].auto_size = True
+            
+    # Save the workbook with all formatting
+    workbook.save(output_file)
+
+# Example usage
+if __name__ == "__main__":
+    # Sample dataframes (replace with your actual dataframes)
+    product_df = pd.DataFrame({
+        'product_id': [1, 2, 3],
+        'name': ['Product A', 'Product B', 'Product C'],
+        'price': [10.99, 20.99, 15.99]
+    })
+    
+    customers_df = pd.DataFrame({
+        'customer_id': [1, 2, 3],
+        'name': ['John Doe', 'Jane Smith', 'Bob Johnson'],
+        'email': ['john@example.com', 'jane@example.com', 'bob@example.com']
+    })
+    
+    supplier_df = pd.DataFrame({
+        'supplier_id': [1, 2, 3],
+        'name': ['Supplier X', 'Supplier Y', 'Supplier Z'],
+        'contact': ['123-456-7890', '234-567-8901', '345-678-9012']
+    })
+    
+    # Create dictionary of dataframes
+    dataframes = {
+        'Products': product_df,
+        'Customers': customers_df,
+        'Suppliers': supplier_df
+    }
+    
+    # Export to Excel with formatting
+    export_dataframes_to_excel(dataframes, 'output.xlsx')
