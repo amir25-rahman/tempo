@@ -1,49 +1,66 @@
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
+from openpyxl.utils import get_column_letter
+
+def calculate_column_widths(df):
+    """
+    Calculate the maximum width needed for each column based on all content
+    including headers and data
+    """
+    # Initialize with header lengths
+    max_lengths = [len(str(col)) for col in df.columns]
+    
+    # Update with data lengths
+    for index, row in df.iterrows():
+        for i, value in enumerate(row):
+            max_lengths[i] = max(max_lengths[i], len(str(value)))
+    
+    # Add padding and convert to Excel units
+    # Excel width units are roughly equal to the number of characters in the default font
+    return [length + 2 for length in max_lengths]
 
 def export_dataframes_to_excel(dataframes_dict, output_file):
     """
-    Export multiple dataframes to Excel with blue headers, white font, filters, and auto-fitted columns
+    Export multiple dataframes to Excel with blue headers, white font, filters, 
+    auto-fitted columns, and frozen header row
     
     Parameters:
     dataframes_dict (dict): Dictionary with sheet names as keys and dataframes as values
     output_file (str): Name of the output Excel file
     """
-    # First export all dataframes
+    # Create Excel writer object
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        # Export each dataframe and format immediately
         for sheet_name, df in dataframes_dict.items():
+            # Write dataframe to sheet
             df.to_excel(writer, sheet_name=sheet_name, index=False)
-    
-    # Then load the workbook to apply formatting
-    workbook = load_workbook(output_file)
-    
-    # Process each worksheet
-    for sheet_name in workbook.sheetnames:
-        worksheet = workbook[sheet_name]
-        
-        # Format header row
-        blue_fill = PatternFill(start_color='0000FF', end_color='0000FF', fill_type='solid')
-        white_font = Font(color='FFFFFF', bold=True)
-        
-        # Apply formatting to header row
-        for cell in worksheet[1]:
-            cell.fill = blue_fill
-            cell.font = white_font
-        
-        # Add filters to all columns
-        max_row = worksheet.max_row
-        max_col = worksheet.max_column
-        worksheet.auto_filter.ref = f"A1:{chr(64 + max_col)}{max_row}"
-        
-        # Use openpyxl's column auto-fit
-        for column in worksheet.columns:
-            max_length = 0
-            worksheet.column_dimensions[column[0].column_letter].bestFit = True
-            worksheet.column_dimensions[column[0].column_letter].auto_size = True
             
-    # Save the workbook with all formatting
-    workbook.save(output_file)
+            # Get the worksheet and set column widths
+            worksheet = writer.sheets[sheet_name]
+            
+            # Calculate and set column widths
+            column_widths = calculate_column_widths(df)
+            for i, width in enumerate(column_widths, 1):
+                column_letter = get_column_letter(i)
+                worksheet.column_dimensions[column_letter].width = width
+            
+            # Format header row
+            blue_fill = PatternFill(start_color='0000FF', end_color='0000FF', fill_type='solid')
+            white_font = Font(color='FFFFFF', bold=True)
+            
+            # Apply formatting to header row
+            for cell in worksheet[1]:
+                cell.fill = blue_fill
+                cell.font = white_font
+            
+            # Add filters
+            max_row = worksheet.max_row
+            max_col = worksheet.max_column
+            worksheet.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
+            
+            # Freeze the first row
+            worksheet.freeze_panes = 'A2'
 
 # Example usage
 if __name__ == "__main__":
