@@ -1,16 +1,3 @@
-# Define the conditions and choices
-conditions = [
-    df['tgt'].notnull(),       # If there's a value in 'tgt'
-    df['due'].notnull() & df['tgt'].notnull(),  # If there’s a value in both 'due' and 'tgt'
-    df['due'].isnull() & df['tgt'].isnull()  # If both are null
-]
-
-# Define the choices for each condition
-choices = [
-    df['tgt'],                # Give the value from 'tgt'
-    df['tgt'],                # Still give the value from 'tgt' (if both are non-null)
-    '2/2/2222'                # Default date if both are null
-]
-
-# Create the new column
-df['new_column'] = np.select(conditions, choices, default=df['due'])
+# Creating the new column
+df['new_column'] = np.where(df['tgt'].notnull(), df['tgt'], 
+                            np.where(df['due'].notnull(), df['due'], '2/2/2222'))
