@@ -1,14 +1,1 @@
-NewColumn = 
-IF(
-    Sheet1[Life] = "DE",
-    Sheet1[MaxC],
-    IF(
-        ISBLANK(Sheet1[DueDate]),
-        IF(
-            ISBLANK(Sheet1[MaxC]) || Sheet1[MaxC] = "TBD",
-            DATE(2222, 2, 2),
-            Sheet1[DueDate]
-        ),
-        Sheet1[DueDate]
-    )
-)
+df['New_col'] = df.apply(lambda row: row['due'] if row['due'] and not row['target'] else row['target'] if row['target'] else ('2/2/2222' if pd.isnull(row['due']) and pd.isnull(row['target']) else row['target']), axis=1)
