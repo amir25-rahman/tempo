@@ -2,7 +2,23 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
 from openpyxl.styles import Alignment
-from openpyxl.worksheet.hyperlink import Hyperlink
+from openpyxl.utils import get_column_letter
+
+def calculate_column_widths(df):
+    """
+    Calculate the maximum width needed for each column based on all content
+    including headers and data
+    """
+    # Initialize with header lengths
+    max_lengths = [len(str(col)) for col in df.columns]
+    
+    # Update with data lengths
+    for index, row in df.iterrows():
+        for i, value in enumerate(row):
+            max_lengths[i] = max(max_lengths[i], len(str(value)))
+    
+    # Add some padding for better visibility
+    return [length + 2 for length in max_lengths]
 
 def export_dataframes_to_excel(dataframes_dict, output_file):
     """
@@ -59,6 +75,12 @@ def export_dataframes_to_excel(dataframes_dict, output_file):
                     url = f"http://google.com/{cell_value}"  # Construct the URL
                     cell.hyperlink = url  # Add the hyperlink
                     cell.style = 'Hyperlink'  # Optional: You can also style it as a hyperlink (blue text, underlined)
+            
+            # Calculate and set column widths (auto-fit)
+            column_widths = calculate_column_widths(df)
+            for i, width in enumerate(column_widths, 1):
+                column_letter = get_column_letter(i)
+                worksheet.column_dimensions[column_letter].width = width
 
 # Example usage
 if __name__ == "__main__":
