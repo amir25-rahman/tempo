@@ -1,3 +1,90 @@
-# Creating the new column
-df['new_column'] = np.where(df['tgt'].notnull(), df['tgt'], 
-                            np.where(df['due'].notnull(), df['due'], '2/2/2222'))
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font
+from openpyxl.styles import Alignment
+
+def export_dataframes_to_excel(dataframes_dict, output_file):
+    """
+    Export multiple dataframes to Excel with blue headers, white font, filters, 
+    and frozen header row. If a sheet named 'Owner' exists, it will wrap text in
+    the 'title' column.
+    
+    Parameters:
+    dataframes_dict (dict): Dictionary with sheet names as keys and dataframes as values
+    output_file (str): Name of the output Excel file
+    """
+    # Create Excel writer object
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        # Export each dataframe and format immediately
+        for sheet_name, df in dataframes_dict.items():
+            # Write dataframe to sheet
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            # Get the worksheet
+            worksheet = writer.sheets[sheet_name]
+            
+            # Format header row
+            blue_fill = PatternFill(start_color='0000FF', end_color='0000FF', fill_type='solid')
+            white_font = Font(color='FFFFFF', bold=True)
+            
+            # Apply formatting to header row
+            for cell in worksheet[1]:
+                cell.fill = blue_fill
+                cell.font = white_font
+            
+            # Add filters
+            max_row = worksheet.max_row
+            max_col = worksheet.max_column
+            worksheet.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
+            
+            # Freeze the first row
+            worksheet.freeze_panes = 'A2'
+            
+            # Check if the sheet is 'Owner' and apply text wrapping to the 'title' column
+            if sheet_name == 'Owner':
+                # Find the index of the 'title' column
+                title_column_index = df.columns.get_loc('title') + 1  # +1 to match Excel column (1-based)
+                
+                # Apply text wrapping to all cells in the 'title' column
+                for row in worksheet.iter_rows(min_col=title_column_index, max_col=title_column_index, min_row=2, max_row=max_row):
+                    for cell in row:
+                        cell.alignment = Alignment(wrap_text=True)
+
+# Example usage
+if __name__ == "__main__":
+    # Sample dataframes (replace with your actual dataframes)
+    product_df = pd.DataFrame({
+        'product_id': [1, 2, 3],
+        'name': ['Product A', 'Product B', 'Product C'],
+        'price': [10.99, 20.99, 15.99]
+    })
+    
+    customers_df = pd.DataFrame({
+        'customer_id': [1, 2, 3],
+        'name': ['John Doe', 'Jane Smith', 'Bob Johnson'],
+        'email': ['john@example.com', 'jane@example.com', 'bob@example.com']
+    })
+    
+    supplier_df = pd.DataFrame({
+        'supplier_id': [1, 2, 3],
+        'name': ['Supplier X', 'Supplier Y', 'Supplier Z'],
+        'contact': ['123-456-7890', '234-567-8901', '345-678-9012']
+    })
+    
+    # Owner sheet with a 'title' column
+    owner_df = pd.DataFrame({
+        'owner_id': [1, 2],
+        'title': ['CEO of Company A with long title', 'CTO of Company B with an even longer title that should wrap'],
+        'name': ['Alice', 'Bob']
+    })
+    
+    # Create dictionary of dataframes
+    dataframes = {
+        'Products': product_df,
+        'Customers': customers_df,
+        'Suppliers': supplier_df,
+        'Owner': owner_df  # Add the Owner sheet
+    }
+    
+    # Export to Excel with formatting
+    export_dataframes_to_excel(dataframes, 'output.xlsx')
