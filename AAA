@@ -2,12 +2,14 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
 from openpyxl.styles import Alignment
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 def export_dataframes_to_excel(dataframes_dict, output_file):
     """
     Export multiple dataframes to Excel with blue headers, white font, filters, 
     and frozen header row. If a sheet named 'Owner' exists, it will wrap text in
-    the 'title' column.
+    the 'title' column. Additionally, hyperlinks will be added to the first column
+    with 'google.com/(cell value)' for each cell (except header).
     
     Parameters:
     dataframes_dict (dict): Dictionary with sheet names as keys and dataframes as values
@@ -49,6 +51,14 @@ def export_dataframes_to_excel(dataframes_dict, output_file):
                 for row in worksheet.iter_rows(min_col=title_column_index, max_col=title_column_index, min_row=2, max_row=max_row):
                     for cell in row:
                         cell.alignment = Alignment(wrap_text=True)
+            
+            # Add hyperlinks to the first column (except header)
+            for row in worksheet.iter_rows(min_col=1, max_col=1, min_row=2, max_row=max_row):
+                for cell in row:
+                    cell_value = str(cell.value)  # Convert cell value to string
+                    url = f"http://google.com/{cell_value}"  # Construct the URL
+                    cell.hyperlink = url  # Add the hyperlink
+                    cell.style = 'Hyperlink'  # Optional: You can also style it as a hyperlink (blue text, underlined)
 
 # Example usage
 if __name__ == "__main__":
