@@ -1,66 +1,75 @@
 from selenium import webdriver
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.edge.service import Service
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
 import time
 
-def export_power_bi_table_data(dashboard_url):
-    """
-    Export data from a Power BI dashboard table using Microsoft Edge
+def export_power_bi_data(dashboard_url):
+    # Configure Edge options
+    edge_options = Options()
     
-    :param dashboard_url: Full URL of the Power BI dashboard
-    """
-    # Setup Edge WebDriver
-    options = webdriver.EdgeOptions()
+    # Optional: Add any necessary arguments
+    edge_options.add_argument('--start-maximized')
+    # Uncomment the next line if you want to run in headless mode
+    # edge_options.add_argument('--headless')
     
-    # Optional: If you want to keep the browser open after script completion
-    # options.add_experimental_option("detach", True)
-    
-    # Initialize the WebDriver
-    driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
+    # Path to Microsoft Edge WebDriver
+    # Replace with the actual path to your edgedriver if auto-detection fails
+    service = Service()
     
     try:
-        # Navigate to dashboard
+        # Create the WebDriver instance
+        driver = webdriver.Edge(service=service, options=edge_options)
+        
+        # Navigate to the dashboard
         driver.get(dashboard_url)
         
-        # Wait for page to load completely
-        # Adjust the wait time and selector as needed
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'visual-container') or contains(@class, 'dashboard-container')]"))
-        )
+        # Wait for page to load (you might need to adjust this)
+        time.sleep(10)
         
-        # Additional wait to ensure everything is interactive
-        time.sleep(5)
+        # Find and click the ellipsis (...) menu
+        # You may need to modify these selectors based on your specific dashboard
+        ellipsis_buttons = driver.find_elements(By.XPATH, "//button[@aria-label='More options']")
         
-        # Find and click the ellipsis (...) menu on the table
-        # You might need to adjust the XPATH based on your specific dashboard
-        ellipsis_menu = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='More options']"))
-        )
-        ellipsis_menu.click()
+        if ellipsis_buttons:
+            ellipsis_buttons[0].click()
+            print("Clicked ellipsis menu")
+        else:
+            print("No ellipsis menu found")
+            return
         
-        # Wait for dropdown menu
-        time.sleep(1)
-        
-        # Click 'Export data'
-        export_data_option = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//div[contains(text(), 'Export data')]"))
-        )
-        export_data_option.click()
-        
-        # Choose export format (e.g., CSV)
+        # Wait a moment
         time.sleep(2)
-        csv_option = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//div[contains(text(), 'CSV')]"))
-        )
-        csv_option.click()
         
-        print("Data export initiated successfully!")
+        # Find and click 'Export data'
+        export_options = driver.find_elements(By.XPATH, "//div[contains(text(), 'Export data')]")
         
-        # Wait a bit for download to complete
+        if export_options:
+            export_options[0].click()
+            print("Clicked export data")
+        else:
+            print("Export data option not found")
+            return
+        
+        # Wait for export options
+        time.sleep(2)
+        
+        # Select CSV
+        csv_options = driver.find_elements(By.XPATH, "//div[contains(text(), 'CSV')]")
+        
+        if csv_options:
+            csv_options[0].click()
+            print("Selected CSV export")
+        else:
+            print("CSV export option not found")
+            return
+        
+        # Wait for download
         time.sleep(5)
+        
+        print("Data export process completed")
     
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -69,8 +78,6 @@ def export_power_bi_table_data(dashboard_url):
         # Close the browser
         driver.quit()
 
-# Example usage
+# Usage
 if __name__ == "__main__":
-    export_power_bi_table_data(
-        dashboard_url="YOUR_POWER_BI_DASHBOARD_URL_HERE"
-    )
+    export_power_bi_data("YOUR_POWER_BI_DASHBOARD_URL")
