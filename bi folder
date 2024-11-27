@@ -1,10 +1,11 @@
 import os
+import time
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
-import time
 
 def export_power_bi_data(dashboard_url, download_path=None):
     # Set default download path to user's Downloads folder if not specified
@@ -14,15 +15,21 @@ def export_power_bi_data(dashboard_url, download_path=None):
     # Create the download directory if it doesn't exist
     os.makedirs(download_path, exist_ok=True)
     
+    # Get today's date in YYYYMMDD format
+    today_date = datetime.now().strftime('%Y%m%d')
+    
     # Configure Edge options
     edge_options = Options()
     
-    # Set download directory
+    # Set download preferences
     edge_options.add_experimental_option('prefs', {
         'download.default_directory': download_path,
         'download.prompt_for_download': False,
         'download.directory_upgrade': True,
-        'safebrowsing.enabled': True
+        'safebrowsing.enabled': True,
+        'download.extensions_to_open': '',
+        # Attempt to rename downloaded file
+        'download.default_filename': f'data_{today_date}.csv'
     })
     
     # Create the WebDriver instance
@@ -86,9 +93,12 @@ def export_power_bi_data(dashboard_url, download_path=None):
             return
         
         # Wait for download
-        time.sleep(5)
+        time.sleep(10)
         
-        print(f"Data export process completed. File saved to: {download_path}")
+        # Full path of the exported file
+        exported_file = os.path.join(download_path, f'data_{today_date}.csv')
+        
+        print(f"Data exported to: {exported_file}")
     
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -99,8 +109,4 @@ def export_power_bi_data(dashboard_url, download_path=None):
 
 # Usage
 if __name__ == "__main__":
-    # Option 1: Use default Downloads/data folder
     export_power_bi_data("YOUR_POWER_BI_DASHBOARD_URL")
-    
-    # Option 2: Specify a custom download path
-    # export_power_bi_data("YOUR_POWER_BI_DASHBOARD_URL", r"C:\path\to\your\specific\folder")
