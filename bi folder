@@ -1,3 +1,24 @@
+import glob
+
+# Wait for the downloaded file to complete
+time.sleep(10)  # Ensure sufficient time for the download to complete
+files = glob.glob(os.path.join(download_path, "*"))  # Get all files in the directory
+
+if files:
+    most_recent_file = max(files, key=os.path.getctime)  # Find the most recent file
+    if most_recent_file:
+        os.rename(most_recent_file, os.path.join(download_path, f'data_{today_date}.csv'))
+        print(f"File renamed to: data_{today_date}.csv")
+    else:
+        print("No file found to rename.")
+else:
+    print("No files in the download directory.")
+
+
+
+
+
+
 import os
 import time
 from datetime import datetime
