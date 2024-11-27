@@ -2,38 +2,40 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.edge.service import Service
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 import time
 
 def export_power_bi_table_data(dashboard_url):
     """
-    Export data from a Power BI dashboard table
+    Export data from a Power BI dashboard table using Microsoft Edge
     
     :param dashboard_url: Full URL of the Power BI dashboard
     """
-    # Setup Chrome WebDriver
-    options = webdriver.ChromeOptions()
-    options.add_experimental_option("detach", True)  # Keep browser open
+    # Setup Edge WebDriver
+    options = webdriver.EdgeOptions()
+    
+    # Optional: If you want to keep the browser open after script completion
+    # options.add_experimental_option("detach", True)
     
     # Initialize the WebDriver
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
     
     try:
         # Navigate to dashboard
         driver.get(dashboard_url)
         
         # Wait for page to load completely
-        # You might need to adjust the selector based on a specific element that indicates full loading
+        # Adjust the wait time and selector as needed
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'visual-container')]"))
+            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'visual-container') or contains(@class, 'dashboard-container')]"))
         )
         
         # Additional wait to ensure everything is interactive
         time.sleep(5)
         
         # Find and click the ellipsis (...) menu on the table
-        # Note: You might need to adjust the XPATH or selector
+        # You might need to adjust the XPATH based on your specific dashboard
         ellipsis_menu = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='More options']"))
         )
