@@ -1,0 +1,106 @@
+import os
+from selenium import webdriver
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+import time
+
+def export_power_bi_data(dashboard_url, download_path=None):
+    # Set default download path to user's Downloads folder if not specified
+    if download_path is None:
+        download_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'data')
+    
+    # Create the download directory if it doesn't exist
+    os.makedirs(download_path, exist_ok=True)
+    
+    # Configure Edge options
+    edge_options = Options()
+    
+    # Set download directory
+    edge_options.add_experimental_option('prefs', {
+        'download.default_directory': download_path,
+        'download.prompt_for_download': False,
+        'download.directory_upgrade': True,
+        'safebrowsing.enabled': True
+    })
+    
+    # Create the WebDriver instance
+    driver = webdriver.Edge(service=Service(), options=edge_options)
+    
+    try:
+        # Navigate to the dashboard
+        driver.get(dashboard_url)
+        
+        # Wait for page to load
+        time.sleep(10)
+        
+        # Get the size of the window
+        window_width = driver.execute_script("return window.innerWidth")
+        window_height = driver.execute_script("return window.innerHeight")
+        
+        # Create action chains
+        actions = ActionChains(driver)
+        
+        # Move to the center of the page
+        actions.move_by_offset(window_width // 2, window_height // 2)
+        actions.perform()
+        
+        # Wait a moment after hovering
+        time.sleep(2)
+        
+        # Find and click the ellipsis (...) menu
+        ellipsis_buttons = driver.find_elements(By.XPATH, "//button[@aria-label='More options']")
+        
+        if ellipsis_buttons:
+            ellipsis_buttons[0].click()
+            print("Clicked ellipsis menu")
+        else:
+            print("No ellipsis menu found")
+            return
+        
+        # Wait a moment
+        time.sleep(2)
+        
+        # Find and click 'Export data'
+        export_options = driver.find_elements(By.XPATH, "//div[contains(text(), 'Export data')]")
+        
+        if export_options:
+            export_options[0].click()
+            print("Clicked export data")
+        else:
+            print("Export data option not found")
+            return
+        
+        # Wait for export options
+        time.sleep(2)
+        
+        # Select CSV
+        csv_options = driver.find_elements(By.XPATH, "//div[contains(text(), 'CSV')]")
+        
+        if csv_options:
+            csv_options[0].click()
+            print("Selected CSV export")
+        else:
+            print("CSV export option not found")
+            return
+        
+        # Wait for download
+        time.sleep(5)
+        
+        print(f"Data export process completed. File saved to: {download_path}")
+    
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    
+    finally:
+        # Close the browser
+        driver.quit()
+
+# Usage
+if __name__ == "__main__":
+    # Option 1: Use default Downloads/data folder
+    export_power_bi_data("YOUR_POWER_BI_DASHBOARD_URL")
+    
+    # Option 2: Specify a custom download path
+    # export_power_bi_data("YOUR_POWER_BI_DASHBOARD_URL", r"C:\path\to\your\specific\folder")
