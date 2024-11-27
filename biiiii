@@ -2,35 +2,40 @@ from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 import time
 
 def export_power_bi_data(dashboard_url):
     # Configure Edge options
     edge_options = Options()
-    
-    # Optional: Add any necessary arguments
     edge_options.add_argument('--start-maximized')
-    # Uncomment the next line if you want to run in headless mode
-    # edge_options.add_argument('--headless')
     
-    # Path to Microsoft Edge WebDriver
-    # Replace with the actual path to your edgedriver if auto-detection fails
-    service = Service()
+    # Create the WebDriver instance
+    driver = webdriver.Edge(service=Service(), options=edge_options)
     
     try:
-        # Create the WebDriver instance
-        driver = webdriver.Edge(service=service, options=edge_options)
-        
         # Navigate to the dashboard
         driver.get(dashboard_url)
         
-        # Wait for page to load (you might need to adjust this)
+        # Wait for page to load
         time.sleep(10)
         
+        # Get the size of the window
+        window_width = driver.execute_script("return window.innerWidth")
+        window_height = driver.execute_script("return window.innerHeight")
+        
+        # Create action chains
+        actions = ActionChains(driver)
+        
+        # Move to the center of the page
+        actions.move_by_offset(window_width // 2, window_height // 2)
+        actions.perform()
+        
+        # Wait a moment after hovering
+        time.sleep(2)
+        
         # Find and click the ellipsis (...) menu
-        # You may need to modify these selectors based on your specific dashboard
         ellipsis_buttons = driver.find_elements(By.XPATH, "//button[@aria-label='More options']")
         
         if ellipsis_buttons:
