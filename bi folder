@@ -17,6 +17,7 @@ def export_power_bi_data(dashboard_url, download_path=None):
     
     # Get today's date in YYYYMMDD format
     today_date = datetime.now().strftime('%Y%m%d')
+    renamed_file = os.path.join(download_path, f'data_{today_date}.csv')
     
     # Configure Edge options
     edge_options = Options()
@@ -26,10 +27,7 @@ def export_power_bi_data(dashboard_url, download_path=None):
         'download.default_directory': download_path,
         'download.prompt_for_download': False,
         'download.directory_upgrade': True,
-        'safebrowsing.enabled': True,
-        'download.extensions_to_open': '',
-        # Attempt to rename downloaded file
-        'download.default_filename': f'data_{today_date}.csv'
+        'safebrowsing.enabled': True
     })
     
     # Create the WebDriver instance
@@ -92,13 +90,22 @@ def export_power_bi_data(dashboard_url, download_path=None):
             print("CSV export option not found")
             return
         
-        # Wait for download
+        # Wait for download to complete
         time.sleep(10)
         
-        # Full path of the exported file
-        exported_file = os.path.join(download_path, f'data_{today_date}.csv')
+        # Rename the most recent downloaded file
+        files_in_download = os.listdir(download_path)
+        downloaded_files = sorted(
+            (os.path.join(download_path, f) for f in files_in_download),
+            key=os.path.getctime
+        )
+        most_recent_file = downloaded_files[-1] if downloaded_files else None
         
-        print(f"Data exported to: {exported_file}")
+        if most_recent_file and os.path.isfile(most_recent_file):
+            os.rename(most_recent_file, renamed_file)
+            print(f"File renamed to: {renamed_file}")
+        else:
+            print("No new file found to rename")
     
     except Exception as e:
         print(f"An error occurred: {e}")
