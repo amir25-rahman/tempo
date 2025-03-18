@@ -31,3 +31,15 @@ def generate_comment(row):
 
 # Apply the function to create a new Comment column
 df['Comment'] = df.apply(generate_comment, axis=1)
+
+
+
+WITH Ranked AS (
+    SELECT *, 
+           ROW_NUMBER() OVER (PARTITION BY CUP ORDER BY (SELECT NULL)) AS rn_cup,
+           ROW_NUMBER() OVER (PARTITION BY BR ORDER BY (SELECT NULL)) AS rn_br
+    FROM my_table
+)
+SELECT CUP, BR, IS_VAL 
+FROM Ranked 
+WHERE rn_cup = 1 AND rn_br = 1;
