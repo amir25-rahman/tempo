@@ -14,3 +14,20 @@ def generate_comment(row):
 
 # Apply the function to create a new Comment column
 df['Comment'] = df.apply(generate_comment, axis=1)
+
+
+
+
+# Define the comment logic
+def generate_comment(row):
+    if row[1] ==  row[2]:  # Check if Map row equals ID row
+        return "MATCH"
+    elif row[1] == row[2] and row[1] == row[3]:
+        return "OK"
+    elif pd.isna(row[3]):  # Check if Trans column is null
+        return "Black"
+    else:
+        return "NO COM"
+
+# Apply the function to create a new Comment column
+df['Comment'] = df.apply(generate_comment, axis=1)
