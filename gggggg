@@ -34,12 +34,16 @@ df['Comment'] = df.apply(generate_comment, axis=1)
 
 
 
-WITH Ranked AS (
-    SELECT *, 
-           ROW_NUMBER() OVER (PARTITION BY CUP ORDER BY (SELECT NULL)) AS rn_cup,
-           ROW_NUMBER() OVER (PARTITION BY BR ORDER BY (SELECT NULL)) AS rn_br
-    FROM my_table
-)
-SELECT CUP, BR, IS_VAL 
-FROM Ranked 
-WHERE rn_cup = 1 AND rn_br = 1;
+
+SELECT COUNT(DISTINCT CUP) AS unique_cup_count,
+       COUNT(DISTINCT BR) AS unique_br_count,
+       COUNT(DISTINCT IS_VAL) AS unique_is_val_count
+FROM my_table;
+
+SELECT CUP, COUNT(*) AS cup_count
+FROM my_table
+GROUP BY CUP;
+
+SELECT BR, COUNT(*) AS BR_count
+FROM my_table
+GROUP BY BR;
