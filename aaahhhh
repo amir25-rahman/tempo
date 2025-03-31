@@ -7,15 +7,14 @@ data = {
     '1': [1, 3, 3, 4, np.nan],
     '2': [2, 2, 3, 5, np.nan],
     '34': [3, 2, 3, 6, np.nan],
-    'Consider_NaN_As_Mismatch': [True, False, True, False, True]  # New column to toggle NaN behavior
 }
 
 df = pd.DataFrame(data)
 
-# Function to check if 'AC' value is found in the other columns
+# Function to check if 'AC' value is found in the other columns and if NaN is involved
 def check_difference(row):
     found_in = []
-    consider_nan_as_mismatch = row['Consider_NaN_As_Mismatch']  # Read the flag from the new column
+    nan_only_diff = False  # Flag for NaN-only differences
     
     # Mapping of original column names to shorter names for the output
     col_name_map = {
@@ -28,20 +27,21 @@ def check_difference(row):
         ac_value = row['AC']
         col_value = row[col]
         
-        # Check if we should treat NaN as a mismatch
-        if consider_nan_as_mismatch:
-            if pd.isna(ac_value) or pd.isna(col_value):
-                continue  # Skip this column if either value is NaN
         if ac_value == col_value:
             found_in.append(col_name_map[col])  # Use the short name for the column
+        elif pd.isna(ac_value) and pd.isna(col_value):
+            nan_only_diff = True  # Set flag if both values are NaN
     
     if found_in:
-        return ', '.join(found_in)  # Return columns where value matches 'AC'
+        return ', '.join(found_in), nan_only_diff
     else:
-        return f"Not found in Col_1, Col_2, Col_34"  # If no match, return this message
+        return f"Not found in Col_1, Col_2, Col_34", nan_only_diff  # If no match, return this message
 
-# Apply the function to each row
-df['Differences'] = df.apply(lambda row: check_difference(row), axis=1)
+# Apply the function to each row and unpack the result
+df[['Differences', 'NaN_Only_Difference']] = df.apply(lambda row: pd.Series(check_difference(row)), axis=1)
+
+# Update NaN_Only_Difference to indicate if the difference is due to NaN values
+df['NaN_Only_Difference'] = df['NaN_Only_Difference'].apply(lambda x: "NaN Difference" if x else "")
 
 # Print the updated DataFrame
 print(df)
