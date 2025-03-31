@@ -33,7 +33,7 @@ def check_difference(row):
     else:
         return f"Not found in 1, 2, 34"  # If no match, return this message
 
-# Apply the function to each row
-df['Differences'] = df.apply(check_difference, axis=1)
+# Apply the function to each row, ensuring that the 'Consider_NaN_As_Mismatch' column is included
+df['Differences'] = df.apply(lambda row: check_difference(row), axis=1)
 
 print(df)
