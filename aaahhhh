@@ -50,3 +50,44 @@ df['categorize'] = df.apply(categorize_row, axis=1)
 
 # Display the result
 print(df)
+
+
+######################
+STATS
+######################
+
+stats_summary = {
+    "Total Rows": len(df),
+    "Data Missing in E": (df['categorize'] == "Data Missing in E").sum(),
+    "Data Fully Matches (No NaN)": (df['categorize'] == "Data Fully Matches (No NaN)").sum(),
+    "Data Fully Matches (Including NaN)": (df['categorize'] == "Data Fully Matches (Including NaN)").sum(),
+    "All Data Mismatch": (df['categorize'] == "All Data Mismatch").sum(),
+    "Some Data Mismatch": (df['categorize'] == "Some Data Mismatch").sum(),
+    "Total Cells Differing (NaN included)": df['Count_Differ_NaN'].sum(),
+    "Total Cells Differing (NaN excluded)": df['Count_Differ'].sum(),
+}
+
+# Convert to DataFrame for better display
+stats_df = pd.DataFrame(stats_summary.items(), columns=["Category", "Count"])
+print(stats_df)
+
+
+#################
+DESCRIPTION
+#################
+6 total rows were analyzed.
+
+2 rows had all missing data (NaN).
+
+1 row fully matched AC with no NaN.
+
+2 rows matched AC if NaN was ignored.
+
+1 row had all values different from AC.
+
+3 rows had at least some mismatched values.
+
+Total mismatched cells (NaN included): 14.
+
+Total mismatched cells (NaN excluded): 7.
+
