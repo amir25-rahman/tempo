@@ -1,28 +1,52 @@
-df['Data_Flag'] = df.apply(lambda row: 'Data Missing' if row[['TD', 'PF', 'SP', 'AF']].isna().all() else 'Data Exists', axis=1)
-
-
 import pandas as pd
 import numpy as np
 
-# Step 1: Load the Data
+# Create the DataFrame
 data = {
-    'AC': [5, 2, 3, 4, 5],
-    'TD': [np.nan, 8, np.nan, 4, 5],
-    'PF': [np.nan, 6, 3, 8, 5],
-    'SP': [np.nan, 8, 3, 8, 5],
-    'AF': [5, 8, 3, 4, 5]
+    'AC': [5,5,5,5,5,5], 
+    'TD': [np.nan,np.nan,5,5,5,6], 
+    'PF': [np.nan,np.nan,5,5,np.nan,7],
+    'SP': [np.nan,6,5,3,np.nan,8],
+    'AF': [np.nan,np.nan,5,0,np.nan,9] 
 }
 
 df = pd.DataFrame(data)
 
-# Step 2: Check if the row is in the database (all values must match AC)
-def is_valid(row):
-    ac_value = row['AC']
-    return all((not pd.isnull(v) and v == ac_value) for k, v in row.items() if k in ['TD', 'PF', 'SP', 'AF'])
+# Create a custom column with values or NaN
+df['Data_Flag'] = df.apply(lambda row: 'Data Missing in E' if row[['TD', 'PF', 'SP', 'AF']].isna().all() else 'Data Exists', axis=1)
+df['Data_Differ'] = df.apply(lambda row: ', '.join([col for col in ['TD', 'PF', 'SP', 'AF'] if row['AC'] != row[col] and pd.notna(row[col])]), axis=1)
+df['Data_Differ_NaN'] = df.apply(lambda row: ', '.join([col for col in ['TD', 'PF', 'SP', 'AF'] if (row['AC'] != row[col]) or pd.isna(row[col])]), axis=1)
+df['All_Differ'] = df.apply(lambda row: 'Yes' if all([(row['AC'] != row[col]) or pd.isna(row[col]) for col in ['TD', 'PF', 'SP', 'AF']]) else 'No', axis=1)
+df['Count_Differ_NaN'] = df.apply(lambda row: sum([(row['AC'] != row[col]) or pd.isna(row[col]) for col in ['TD', 'PF', 'SP', 'AF']]), axis=1)
+df['Count_Differ'] = df.apply(lambda row: sum([(row['AC'] != row[col]) and pd.notna(row[col]) for col in ['TD', 'PF', 'SP', 'AF']]), axis=1)
+# Display the result
+# Display the result
+print(df)
 
-df['InDatabase'] = df.apply(is_valid, axis=1)
+def categorize_row(row):
+    cols_to_check = ['TD', 'PF', 'SP', 'AF']
+    
+    all_missing = row[cols_to_check].isna().all()  # All columns are NaN
+    all_match_with_nan = all((row[col] == row['AC']) or pd.isna(row[col]) for col in cols_to_check)  # All match AC, NaN is OK
+    all_match_no_nan = all(row[col] == row['AC'] for col in cols_to_check if pd.notna(row[col])) and not row[cols_to_check].isna().any()  # No NaNs, all match AC
+    all_mismatch = all((row[col] != row['AC']) or pd.isna(row[col]) for col in cols_to_check)  # All differ (including NaN)
+    some_mismatch = any((row[col] != row['AC']) or pd.isna(row[col]) for col in cols_to_check)  # At least one differs
+    
+    if all_missing:
+        return "Data Missing in E"
+    elif all_match_no_nan:
+        return "Data Fully Matches (No NaN)"
+    elif all_match_with_nan:
+        return "Data Fully Matches (Including NaN)"
+    elif all_mismatch:
+        return "All Data Mismatch"
+    elif some_mismatch:
+        return "Some Data Mismatch"
+    else:
+        return "Data Exists"
 
-# Step 3: Keep only the original data and `InDatabase` column
-df_final = df[['AC', 'TD', 'PF', 'SP', 'AF', 'InDatabase']]
+# Apply the function to create the flag column
+df['categorize'] = df.apply(categorize_row, axis=1)
 
-print(df_final)
+# Display the result
+print(df)
