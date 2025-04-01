@@ -3,14 +3,20 @@ import numpy as np
 
 # Create the DataFrame
 data = {
-    'AC': [5,5,5,5,5,5], 
-    'TD': [np.nan,np.nan,5,5,5,6], 
-    'PF': [np.nan,np.nan,5,5,np.nan,7],
-    'SP': [np.nan,6,5,3,np.nan,8],
-    'AF': [np.nan,np.nan,5,0,np.nan,9] 
+    'UOI ID': [101, np.nan, 102, np.nan, 103, np.nan,102], 
+    'BB ID': [2001, 2002, 2003, 2004, 2005, 2006,2084],  
+    'AC': [5,5,5,5,5,5,9], 
+    'TD': [np.nan,np.nan,5,5,5,6,4], 
+    'PF': [np.nan,np.nan,5,5,np.nan,7,9],
+    'SP': [np.nan,6,5,3,np.nan,8,9],
+    'AF': [np.nan,np.nan,5,0,np.nan,9,9] 
 }
 
+
 df = pd.DataFrame(data)
+df['UOI ID'] = df.apply(lambda row: row['BB ID'] if pd.isna(row['UOI ID']) else row['UOI ID'], axis=1)
+df['UOI ID'] = df['UOI ID'].fillna("NO unique identity")
+
 
 # Create a custom column with values or NaN
 df['Data_Flag'] = df.apply(lambda row: 'Data Missing in E' if row[['TD', 'PF', 'SP', 'AF']].isna().all() else 'Data Exists', axis=1)
@@ -48,46 +54,39 @@ def categorize_row(row):
 # Apply the function to create the flag column
 df['categorize'] = df.apply(categorize_row, axis=1)
 
-# Display the result
-print(df)
-
 
 ######################
 STATS
 ######################
 
-stats_summary = {
-    "Total Rows": len(df),
-    "Data Missing in E": (df['categorize'] == "Data Missing in E").sum(),
-    "Data Fully Matches (No NaN)": (df['categorize'] == "Data Fully Matches (No NaN)").sum(),
-    "Data Fully Matches (Including NaN)": (df['categorize'] == "Data Fully Matches (Including NaN)").sum(),
-    "All Data Mismatch": (df['categorize'] == "All Data Mismatch").sum(),
-    "Some Data Mismatch": (df['categorize'] == "Some Data Mismatch").sum(),
-    "Total Cells Differing (NaN included)": df['Count_Differ_NaN'].sum(),
-    "Total Cells Differing (NaN excluded)": df['Count_Differ'].sum(),
-}
+grouped = df.groupby('UOI ID')
 
-# Convert to DataFrame for better display
-stats_df = pd.DataFrame(stats_summary.items(), columns=["Category", "Count"])
-print(stats_df)
+# Function to calculate stats for each group
+def calculate_group_stats(group):
+    total_rows = len(group)
 
+    # Count the categories
+    stats = {
+        "Data Missing in E": (group['categorize'] == "Data Missing in E").sum(),
+        "Data Fully Matches (No NaN)": (group['categorize'] == "Data Fully Matches (No NaN)").sum(),
+        "Data Fully Matches (Including NaN)": (group['categorize'] == "Data Fully Matches (Including NaN)").sum(),
+        "All Data Mismatch": (group['categorize'] == "All Data Mismatch").sum(),
+        "Some Data Mismatch": (group['categorize'] == "Some Data Mismatch").sum(),
+        "Total Cells Differing (NaN included)": group['Count_Differ_NaN'].sum(),
+        "Total Cells Differing (NaN excluded)": group['Count_Differ'].sum(),
+    }
 
-#################
-DESCRIPTION
-#################
-6 total rows were analyzed.
+    # Add percentages
+    stats['Data Missing in E %'] = f"{(stats['Data Missing in E'] / total_rows) * 100:.2f}%"
+    stats['Data Fully Matches (No NaN) %'] = f"{(stats['Data Fully Matches (No NaN)'] / total_rows) * 100:.2f}%"
+    stats['Data Fully Matches (Including NaN) %'] = f"{(stats['Data Fully Matches (Including NaN)'] / total_rows) * 100:.2f}%"
+    stats['All Data Mismatch %'] = f"{(stats['All Data Mismatch'] / total_rows) * 100:.2f}%"
+    stats['Some Data Mismatch %'] = f"{(stats['Some Data Mismatch'] / total_rows) * 100:.2f}%"
+    stats['Total Cells Differing (NaN included) %'] = f"{(stats['Total Cells Differing (NaN included)'] / (total_rows * 4)) * 100:.2f}%"
+    stats['Total Cells Differing (NaN excluded) %'] = f"{(stats['Total Cells Differing (NaN excluded)'] / (total_rows * 4)) * 100:.2f}%"
 
-2 rows had all missing data (NaN).
+    return pd.Series(stats)
 
-1 row fully matched AC with no NaN.
-
-2 rows matched AC if NaN was ignored.
-
-1 row had all values different from AC.
-
-3 rows had at least some mismatched values.
-
-Total mismatched cells (NaN included): 14.
-
-Total mismatched cells (NaN excluded): 7.
+# Apply stats calculation for each group and reset the index
+stats_df = grouped.apply(calculate_group_stats).reset_index()
 
