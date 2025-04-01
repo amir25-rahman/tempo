@@ -1,3 +1,6 @@
+df['Data_Flag'] = df.apply(lambda row: 'Data Missing' if row[['TD', 'PF', 'SP', 'AF']].isna().all() else 'Data Exists', axis=1)
+
+
 import pandas as pd
 import numpy as np
 
