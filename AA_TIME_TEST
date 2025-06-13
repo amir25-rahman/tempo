@@ -1,0 +1,38 @@
+import pandas as pd
+df = pd.read_excel('time_d.xlsx')
+
+
+# Extract separate date and time columns
+df["Intro Date"] = df["Intro Date Time"].dt.date
+df["Intro Time"] = df["Intro Date Time"].dt.time
+
+df["Kick Off Date"] = df["Kick Off Date Time"].dt.date
+df["Kick Off Time"] = df["Kick Off Date Time"].dt.time
+
+df["Delivery Date"] = df["Delivery Date Time"].dt.date
+df["Delivery Time"] = df["Delivery Date Time"].dt.time
+
+df["Intro Date Time"] = pd.to_datetime(df["Intro Date Time"])
+df["Kick Off Date Time"] = pd.to_datetime(df["Kick Off Date Time"])
+df["Delivery Date Time"] = pd.to_datetime(df["Delivery Date Time"])
+df["Business Date "] = pd.to_datetime(df["Business Date "])
+
+# Extract separate date and time columns
+df["Intro Date"] = df["Intro Date Time"].dt.date
+df["Intro Time"] = df["Intro Date Time"].dt.time
+
+df["Kick Off Date"] = df["Kick Off Date Time"].dt.date
+df["Kick Off Time"] = df["Kick Off Date Time"].dt.time
+
+df["Delivery Date"] = df["Delivery Date Time"].dt.date
+df["Delivery Time"] = df["Delivery Date Time"].dt.time
+
+# Select and reorder columns
+result = df[[
+    "Business Date ", "GROUP NAME ",
+    "Intro Date", "Intro Time",
+    "Kick Off Date", "Kick Off Time",
+    "Delivery Date", "Delivery Time"
+]]
+
+result
