@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-# Define valid stage order and delay ranges
+# Sample stage order and delays (adjust if needed)
 stage_order = ['Arrival', 'Start', 'End', 'Complete', 'Deliver']
 delay_ranges = {
     'Arrival': (0, 0),
@@ -11,41 +11,33 @@ delay_ranges = {
     'Deliver': (3, 20)
 }
 
-# Clean data: drop rows with NaN in 'variable' or 'Business Date'
-df = df[df['variable'].notna() & df['Business Date'].notna()].copy()
+# Clean and filter
+df = df.dropna(subset=['Business Date', 'variable']).copy()
+df['variable'] = df['variable'].str.strip().str.title()
+df = df[df['variable'].isin(stage_order)]
 
-# Filter only valid stage values
-df = df[df['variable'].isin(stage_order)].copy()
-
-# Set ordered categorical for sorting
+# Sort by Business Date and stage order
 df['variable'] = pd.Categorical(df['variable'], categories=stage_order, ordered=True)
-
-# Sort by Business Date and variable
 df = df.sort_values(['Business Date', 'variable'])
 
-# Set base time (e.g., 1:00 PM)
 base_time = pd.to_datetime("13:00", format="%H:%M")
 
-# Function to compute cumulative delay and time
-def generate_delays(group):
-    cumulative_delay = 0
-    delay_list = []
-    time_list = []
+def add_delays(group):
+    total_delay = 0
+    delays = []
+    actual_times = []
 
     for stage in group['variable']:
-        min_d, max_d = delay_ranges.get(stage, (0, 0))
-        delay = np.random.randint(min_d, max_d + 1)
-        cumulative_delay += delay
-        delay_minutes = 0 if stage == 'Arrival' else cumulative_delay
-        delay_list.append(delay_minutes)
-        time_list.append((base_time + pd.to_timedelta(delay_minutes, unit='m')).strftime('%-I:%M %p'))
+        min_d, max_d = delay_ranges[stage]
+        total_delay += np.random.randint(min_d, max_d + 1)
+        delay_min = 0 if stage == 'Arrival' else total_delay
+        delays.append(delay_min)
+        actual_times.append((base_time + pd.Timedelta(minutes=delay_min)).strftime('%-I:%M %p'))
 
-    group['Delay (min)'] = delay_list
-    group['Actual Time'] = time_list
+    group['Delay (min)'] = delays
+    group['Actual Time'] = actual_times
     return group
 
-# Apply per Business Date group
-df = df.groupby('Business Date', group_keys=False).apply(generate_delays)
+df = df.groupby('Business Date').apply(add_delays).reset_index(drop=True)
 
-# Final output
 print(df)
