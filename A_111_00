@@ -1,0 +1,48 @@
+import pandas as pd
+import numpy as np
+
+# Sample ordered stage list
+stage_order = ["Arrival Time", "Start Time", "End Time", "Completion Time", "Delivery Time"]
+
+# Delay ranges per stage
+delay_ranges = {
+    "Arrival Time": (0, 0),
+    "Start Time": (1, 10),
+    "End Time": (5, 15),
+    "Completion Time": (2, 8),
+    "Delivery Time": (3, 20)
+}
+
+# Ensure correct stage order
+df['Stage'] = pd.Categorical(df['Stage'], categories=stage_order, ordered=True)
+df = df.sort_values(['ID', 'Stage'])
+
+# Base time (e.g., 1:00 PM)
+base_time = pd.to_datetime("13:00", format="%H:%M")
+
+# Function to generate delays and actual time
+def generate_delays_and_times(group):
+    delay_list = []
+    cumulative_delay = 0
+
+    for stage in group['Stage']:
+        min_d, max_d = delay_ranges[stage]
+        delay = np.random.randint(min_d, max_d + 1)
+        cumulative_delay += delay
+        delay_list.append(cumulative_delay)
+
+    # Set arrival time delay to 0
+    delay_list[0] = 0
+
+    # Convert delay to actual time
+    actual_times = [base_time + pd.to_timedelta(mins, unit='m') for mins in delay_list]
+    formatted_times = [t.strftime('%-I:%M %p') for t in actual_times]  # e.g., 1:07 PM
+
+    group['Delay (min)'] = delay_list
+    group['Actual Time'] = formatted_times
+    return group
+
+# Apply function per group (by ID)
+df = df.groupby('ID', group_keys=False).apply(generate_delays_and_times)
+
+print(df.head())
