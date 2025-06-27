@@ -1,53 +1,166 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
-# Define your stage order and delay ranges (adjust if needed)
-stage_order = ['Arrival', 'Start', 'End', 'Complete', 'Deliver']
-delay_ranges = {
-    'Arrival': (0, 0),
-    'Start': (1, 10),
-    'End': (5, 15),
-    'Complete': (2, 8),
-    'Deliver': (3, 20)
+def generate_random_delays(df, delay_ranges=None):
+    """
+    Generate random time delays for each stage while maintaining logical order.
+    
+    Parameters:
+    df: DataFrame with 'Stage' column
+    delay_ranges: Dict with min/max delays for each stage (in minutes)
+    
+    Returns:
+    DataFrame with additional 'Random_Delay_Minutes' column
+    """
+    
+    # Default delay ranges (in minutes) - you can customize these
+    if delay_ranges is None:
+        delay_ranges = {
+            'Arrival Time': (0, 30),      # 0-30 min delay
+            'Start Time': (5, 45),        # 5-45 min delay from arrival
+            'End Time': (10, 60),         # 10-60 min delay from start
+            'Completion Time': (2, 20),   # 2-20 min delay from end
+            'Delivery Time': (5, 40)      # 5-40 min delay from completion
+        }
+    
+    # Create a copy of the dataframe
+    result_df = df.copy()
+    
+    # Initialize delay column
+    result_df['Random_Delay_Minutes'] = 0
+    
+    # Process each unique combination of business date and application
+    # This ensures consistency within each process flow
+    group_cols = []
+    if 'Business_Date' in df.columns:
+        group_cols.append('Business_Date')
+    if 'Application_Name' in df.columns:
+        group_cols.append('Application_Name')
+    
+    if group_cols:
+        # Group by business identifiers
+        for group_keys, group_df in result_df.groupby(group_cols):
+            group_indices = group_df.index
+            cumulative_delay = 0
+            
+            # Sort stages in logical order
+            stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
+            
+            for stage in stage_order:
+                stage_mask = (result_df.loc[group_indices, 'Stage'] == stage)
+                stage_indices = group_indices[stage_mask]
+                
+                if len(stage_indices) > 0:
+                    min_delay, max_delay = delay_ranges.get(stage, (0, 30))
+                    
+                    # Generate random delay for this stage
+                    stage_delay = np.random.randint(min_delay, max_delay + 1)
+                    
+                    # Ensure cumulative delays maintain order
+                    cumulative_delay += stage_delay
+                    
+                    # Assign the cumulative delay to maintain order
+                    result_df.loc[stage_indices, 'Random_Delay_Minutes'] = cumulative_delay
+    else:
+        # If no grouping columns, treat each row independently but maintain order logic
+        stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
+        base_delays = {}
+        
+        for stage in stage_order:
+            stage_mask = (result_df['Stage'] == stage)
+            if stage_mask.any():
+                min_delay, max_delay = delay_ranges.get(stage, (0, 30))
+                
+                # For independent rows, use individual random delays
+                random_delays = np.random.randint(min_delay, max_delay + 1, size=stage_mask.sum())
+                result_df.loc[stage_mask, 'Random_Delay_Minutes'] = random_delays
+    
+    return result_df
+
+def generate_ordered_delays(df, delay_ranges=None):
+    """
+    Alternative approach: Generate delays that strictly maintain order within each process.
+    Each subsequent stage gets a delay that's at least as large as the previous stage.
+    """
+    
+    if delay_ranges is None:
+        delay_ranges = {
+            'Arrival Time': (0, 30),
+            'Start Time': (5, 45),
+            'End Time': (10, 60),
+            'Completion Time': (2, 20),
+            'Delivery Time': (5, 40)
+        }
+    
+    result_df = df.copy()
+    result_df['Random_Delay_Minutes'] = 0
+    
+    # Group by business identifiers if they exist
+    group_cols = [col for col in ['Business_Date', 'Application_Name'] if col in df.columns]
+    
+    if group_cols:
+        for group_keys, group_df in result_df.groupby(group_cols):
+            group_indices = group_df.index
+            
+            # Track cumulative minimum delay to maintain order
+            min_cumulative_delay = 0
+            stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
+            
+            for stage in stage_order:
+                stage_mask = (result_df.loc[group_indices, 'Stage'] == stage)
+                stage_indices = group_indices[stage_mask]
+                
+                if len(stage_indices) > 0:
+                    min_stage_delay, max_stage_delay = delay_ranges.get(stage, (0, 30))
+                    
+                    # Ensure this stage's delay is at least the cumulative minimum
+                    actual_min_delay = max(min_stage_delay, min_cumulative_delay)
+                    actual_max_delay = max(max_stage_delay, actual_min_delay + 5)  # At least 5 min buffer
+                    
+                    # Generate random delay within adjusted range
+                    stage_delay = np.random.randint(actual_min_delay, actual_max_delay + 1)
+                    
+                    result_df.loc[stage_indices, 'Random_Delay_Minutes'] = stage_delay
+                    min_cumulative_delay = stage_delay
+    
+    return result_df
+
+# Example usage:
+# Assuming your dataframe is called 'df' with columns: Stage, Business_Date, Application_Name
+
+# Sample data for demonstration
+sample_data = {
+    'Stage': ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time'] * 3,
+    'Business_Date': ['2024-06-27'] * 5 + ['2024-06-28'] * 5 + ['2024-06-29'] * 5,
+    'Application_Name': ['App1'] * 5 + ['App2'] * 5 + ['App3'] * 5,
+    'Some_Other_Column': [None] * 15  # Your existing nulls
 }
 
-# 1. Drop rows where any grouping column or 'variable' is NaN
-df = df.dropna(subset=['Business Date', 'App Name', 'variable']).copy()
+sample_df = pd.DataFrame(sample_data)
 
-# 2. Clean 'variable' column
-df['variable'] = df['variable'].astype(str).str.strip().str.title()
+print("Original DataFrame:")
+print(sample_df.head(10))
 
-# 3. Filter rows to only those with valid stages
-df = df[df['variable'].isin(stage_order)]
+# Method 1: Simple random delays
+result1 = generate_random_delays(sample_df)
+print("\nMethod 1 - Random delays:")
+print(result1.head(10))
 
-# 4. Set ordered categorical for 'variable' to maintain stage order in sorting
-df['variable'] = pd.Categorical(df['variable'], categories=stage_order, ordered=True)
+# Method 2: Strictly ordered delays
+result2 = generate_ordered_delays(sample_df)
+print("\nMethod 2 - Ordered delays:")
+print(result2.head(10))
 
-# 5. Sort by grouping keys and stage order
-df = df.sort_values(['Business Date', 'App Name', 'variable'])
+# Custom delay ranges example
+custom_ranges = {
+    'Arrival Time': (0, 15),      # 0-15 min
+    'Start Time': (10, 30),       # 10-30 min
+    'End Time': (20, 90),         # 20-90 min
+    'Completion Time': (5, 25),   # 5-25 min
+    'Delivery Time': (10, 45)     # 10-45 min
+}
 
-# 6. Define base time (e.g., 1:00 PM)
-base_time = pd.to_datetime("13:00", format="%H:%M")
-
-# 7. Function to add cumulative delays & actual times per group
-def generate_delays(group):
-    cumulative_delay = 0
-    delays = []
-    actual_times = []
-    
-    for stage in group['variable']:
-        min_d, max_d = delay_ranges.get(stage, (0, 0))
-        delay = np.random.randint(min_d, max_d + 1)
-        cumulative_delay += delay
-        delay_min = 0 if stage == 'Arrival' else cumulative_delay
-        delays.append(delay_min)
-        actual_times.append((base_time + pd.Timedelta(minutes=delay_min)).strftime('%-I:%M %p'))
-        
-    group['Delay (min)'] = delays
-    group['Actual Time'] = actual_times
-    return group
-
-# 8. Group by Business Date, App Name, and variable, apply delay generation per group of stages per Business Date and App Name
-df = df.groupby(['Business Date', 'App Name'], group_keys=False).apply(generate_delays).reset_index(drop=True)
-
-print(df)
+result3 = generate_ordered_delays(sample_df, custom_ranges)
+print("\nMethod 2 with custom ranges:")
+print(result3.head(10))
