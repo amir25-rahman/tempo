@@ -241,7 +241,7 @@ def generate_random_delays(df, delay_ranges=None, base_time=None):
                     
                     # Calculate actual time
                     actual_datetime = base_datetime + timedelta(minutes=cumulative_delay)
-                    actual_time_str = actual_datetime.strftime("%-I:%M %p")  # Format like "1:00 AM"
+                    actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')  # Format like "1:00 AM"
                     
                     # Assign the cumulative delay and actual time
                     result_df.loc[stage_indices, 'Random_Delay_Minutes'] = cumulative_delay
@@ -263,7 +263,7 @@ def generate_random_delays(df, delay_ranges=None, base_time=None):
                 # Calculate actual times
                 for idx, delay in zip(result_df[stage_mask].index, random_delays):
                     actual_datetime = base_datetime + timedelta(minutes=delay)
-                    actual_time_str = actual_datetime.strftime("%-I:%M %p")
+                    actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')
                     result_df.loc[idx, 'Actual_Time'] = actual_time_str
     
     return result_df
@@ -321,7 +321,7 @@ def generate_ordered_delays(df, delay_ranges=None, base_time=None):
                     
                     # Calculate actual time
                     actual_datetime = base_datetime + timedelta(minutes=stage_delay)
-                    actual_time_str = actual_datetime.strftime("%-I:%M %p")  # Format like "1:00 AM"
+                    actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')  # Format like "1:00 AM"
                     
                     result_df.loc[stage_indices, 'Random_Delay_Minutes'] = stage_delay
                     result_df.loc[stage_indices, 'Actual_Time'] = actual_time_str
