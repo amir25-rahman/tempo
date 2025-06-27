@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-# Example delay ranges and stage order
+# Define valid stage order and delay ranges
 stage_order = ['Arrival', 'Start', 'End', 'Complete', 'Deliver']
 delay_ranges = {
     'Arrival': (0, 0),
@@ -11,28 +11,28 @@ delay_ranges = {
     'Deliver': (3, 20)
 }
 
-# Drop rows where either 'Stage' or 'Business Date' is NaN
-df = df[df['Stage'].notna() & df['Business Date'].notna()].copy()
+# Clean data: drop rows with NaN in 'variable' or 'Business Date'
+df = df[df['variable'].notna() & df['Business Date'].notna()].copy()
 
-# Filter stages to valid ones only (optional safety step)
-df = df[df['Stage'].isin(stage_order)].copy()
+# Filter only valid stage values
+df = df[df['variable'].isin(stage_order)].copy()
 
-# Set ordered stage for sorting
-df['Stage'] = pd.Categorical(df['Stage'], categories=stage_order, ordered=True)
+# Set ordered categorical for sorting
+df['variable'] = pd.Categorical(df['variable'], categories=stage_order, ordered=True)
 
-# Sort the DataFrame
-df = df.sort_values(['Business Date', 'Stage'])
+# Sort by Business Date and variable
+df = df.sort_values(['Business Date', 'variable'])
 
 # Set base time (e.g., 1:00 PM)
 base_time = pd.to_datetime("13:00", format="%H:%M")
 
-# Function to generate delay and actual time
+# Function to compute cumulative delay and time
 def generate_delays(group):
     cumulative_delay = 0
     delay_list = []
     time_list = []
 
-    for stage in group['Stage']:
+    for stage in group['variable']:
         min_d, max_d = delay_ranges.get(stage, (0, 0))
         delay = np.random.randint(min_d, max_d + 1)
         cumulative_delay += delay
@@ -44,7 +44,7 @@ def generate_delays(group):
     group['Actual Time'] = time_list
     return group
 
-# Group by Business Date safely
+# Apply per Business Date group
 df = df.groupby('Business Date', group_keys=False).apply(generate_delays)
 
 # Final output
