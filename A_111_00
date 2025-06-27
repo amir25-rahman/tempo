@@ -1,48 +1,47 @@
 import pandas as pd
 import numpy as np
 
-# Sample ordered stage list
-stage_order = ["Arrival Time", "Start Time", "End Time", "Completion Time", "Delivery Time"]
+# Example: your existing DataFrame
+# df = pd.DataFrame({'ID': [...], 'Stage': [...]})
 
-# Delay ranges per stage
-delay_ranges = {
-    "Arrival Time": (0, 0),
-    "Start Time": (1, 10),
-    "End Time": (5, 15),
-    "Completion Time": (2, 8),
-    "Delivery Time": (3, 20)
-}
+# Define the correct stage order mapping
+stage_order = ['Arrival', 'Start', 'End', 'Complete', 'Deliver']
 
-# Ensure correct stage order
+# Ensure Stage is ordered properly
 df['Stage'] = pd.Categorical(df['Stage'], categories=stage_order, ordered=True)
 df = df.sort_values(['ID', 'Stage'])
 
-# Base time (e.g., 1:00 PM)
+# Define random delay ranges between stages
+delay_ranges = {
+    'Arrival': (0, 0),        # Base delay = 0
+    'Start': (1, 10),         
+    'End': (5, 15),           
+    'Complete': (2, 8),       
+    'Deliver': (3, 20)        
+}
+
+# Set base time (e.g., 1:00 PM)
 base_time = pd.to_datetime("13:00", format="%H:%M")
 
-# Function to generate delays and actual time
-def generate_delays_and_times(group):
-    delay_list = []
+# Function to apply per group
+def add_delays(group):
     cumulative_delay = 0
+    delay_list = []
+    time_list = []
 
     for stage in group['Stage']:
         min_d, max_d = delay_ranges[stage]
         delay = np.random.randint(min_d, max_d + 1)
         cumulative_delay += delay
-        delay_list.append(cumulative_delay)
-
-    # Set arrival time delay to 0
-    delay_list[0] = 0
-
-    # Convert delay to actual time
-    actual_times = [base_time + pd.to_timedelta(mins, unit='m') for mins in delay_list]
-    formatted_times = [t.strftime('%-I:%M %p') for t in actual_times]  # e.g., 1:07 PM
+        delay_list.append(0 if stage == 'Arrival' else cumulative_delay)
+        time_list.append((base_time + pd.to_timedelta(0 if stage == 'Arrival' else cumulative_delay, unit='m')).strftime('%-I:%M %p'))
 
     group['Delay (min)'] = delay_list
-    group['Actual Time'] = formatted_times
+    group['Actual Time'] = time_list
     return group
 
-# Apply function per group (by ID)
-df = df.groupby('ID', group_keys=False).apply(generate_delays_and_times)
+# Apply function per ID group
+df = df.groupby('ID', group_keys=False).apply(add_delays)
 
-print(df.head())
+# Final result
+print(df)
