@@ -218,10 +218,10 @@ def generate_random_delays(df, delay_ranges=None, base_time=None):
         # Group by business identifiers
         for group_keys, group_df in result_df.groupby(group_cols):
             group_indices = group_df.index
-            cumulative_delay = 0
             
             # Convert base_time to datetime for each group
             base_datetime = datetime.combine(datetime.today(), base_time)
+            current_time = base_datetime
             
             # Sort stages in logical order
             stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
@@ -236,18 +236,20 @@ def generate_random_delays(df, delay_ranges=None, base_time=None):
                     # Generate random delay for this stage
                     stage_delay = np.random.randint(min_delay, max_delay + 1)
                     
-                    # Ensure cumulative delays maintain order
-                    cumulative_delay += stage_delay
+                    # Add this stage's delay to current time
+                    current_time = current_time + timedelta(minutes=int(stage_delay))
                     
-                    # Calculate actual time
-                    actual_datetime = base_datetime + timedelta(minutes=cumulative_delay)
-                    actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')  # Format like "1:00 AM"
+                    # Calculate total minutes from base time
+                    total_minutes = int((current_time - base_datetime).total_seconds() / 60)
                     
-                    # Assign the cumulative delay and actual time
-                    result_df.loc[stage_indices, 'Random_Delay_Minutes'] = cumulative_delay
+                    # Format actual time
+                    actual_time_str = current_time.strftime("%I:%M %p").lstrip('0')
+                    
+                    # Assign the delay and actual time
+                    result_df.loc[stage_indices, 'Random_Delay_Minutes'] = stage_delay
                     result_df.loc[stage_indices, 'Actual_Time'] = actual_time_str
     else:
-        # If no grouping columns, treat each row independently but maintain order logic
+        # If no grouping columns, treat each row independently
         stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
         base_datetime = datetime.combine(datetime.today(), base_time)
         
@@ -257,12 +259,13 @@ def generate_random_delays(df, delay_ranges=None, base_time=None):
                 min_delay, max_delay = delay_ranges.get(stage, (0, 30))
                 
                 # For independent rows, use individual random delays
-                random_delays = np.random.randint(min_delay, max_delay + 1, size=stage_mask.sum())
-                result_df.loc[stage_mask, 'Random_Delay_Minutes'] = random_delays
-                
-                # Calculate actual times
-                for idx, delay in zip(result_df[stage_mask].index, random_delays):
-                    actual_datetime = base_datetime + timedelta(minutes=delay)
+                stage_indices = result_df[stage_mask].index
+                for idx in stage_indices:
+                    stage_delay = np.random.randint(min_delay, max_delay + 1)
+                    result_df.loc[idx, 'Random_Delay_Minutes'] = stage_delay
+                    
+                    # Calculate actual time
+                    actual_datetime = base_datetime + timedelta(minutes=int(stage_delay))
                     actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')
                     result_df.loc[idx, 'Actual_Time'] = actual_time_str
     
@@ -300,9 +303,9 @@ def generate_ordered_delays(df, delay_ranges=None, base_time=None):
             
             # Convert base_time to datetime for each group
             base_datetime = datetime.combine(datetime.today(), base_time)
+            current_time = base_datetime
             
             # Track cumulative minimum delay to maintain order
-            min_cumulative_delay = 0
             stage_order = ['Arrival Time', 'Start Time', 'End Time', 'Completion Time', 'Delivery Time']
             
             for stage in stage_order:
@@ -312,20 +315,18 @@ def generate_ordered_delays(df, delay_ranges=None, base_time=None):
                 if len(stage_indices) > 0:
                     min_stage_delay, max_stage_delay = delay_ranges.get(stage, (0, 30))
                     
-                    # Ensure this stage's delay is at least the cumulative minimum
-                    actual_min_delay = max(min_stage_delay, min_cumulative_delay)
-                    actual_max_delay = max(max_stage_delay, actual_min_delay + 5)  # At least 5 min buffer
+                    # Generate random delay for this specific stage
+                    stage_delay = np.random.randint(min_stage_delay, max_stage_delay + 1)
                     
-                    # Generate random delay within adjusted range
-                    stage_delay = np.random.randint(actual_min_delay, actual_max_delay + 1)
+                    # Add this stage's delay to get the absolute time
+                    current_time = current_time + timedelta(minutes=int(stage_delay))
                     
-                    # Calculate actual time
-                    actual_datetime = base_datetime + timedelta(minutes=stage_delay)
-                    actual_time_str = actual_datetime.strftime("%I:%M %p").lstrip('0')  # Format like "1:00 AM"
+                    # Format actual time
+                    actual_time_str = current_time.strftime("%I:%M %p").lstrip('0')
                     
+                    # Store the individual stage delay (not cumulative)
                     result_df.loc[stage_indices, 'Random_Delay_Minutes'] = stage_delay
                     result_df.loc[stage_indices, 'Actual_Time'] = actual_time_str
-                    min_cumulative_delay = stage_delay
     
     return result_df
 
