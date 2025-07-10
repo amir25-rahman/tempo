@@ -1,3 +1,30 @@
+import tarfile
+import pickle
+
+# Open the .tar.gz archive
+with tarfile.open("your_archive.tar.gz", "r:gz") as tar:
+    # List all files in the archive
+    members = tar.getmembers()
+    
+    # Print filenames (optional, for inspection)
+    for member in members:
+        print(member.name)
+
+    # Find the pickle file (by name or extension)
+    pickle_member = next(m for m in members if m.name.endswith('.pkl'))
+
+    # Extract and load the pickle file
+    with tar.extractfile(pickle_member) as f:
+        data = pickle.load(f)
+
+
+
+
+
+
+
+
+
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
