@@ -1,3 +1,23 @@
+
+
+
+
+
+
+DistinctFileCount = 
+CALCULATE(
+    DISTINCTCOUNT(MyTable[File Name]),
+    ALLEXCEPT(MyTable, MyTable[Business Date], MyTable[App Name]),
+    MyTable[Breach] = 1
+)
+
+
+
+
+
+
+
+
 import tarfile
 import pickle
 
