@@ -1,4 +1,15 @@
-
+BreachFileCountNoDuplication =
+CALCULATE (
+    DISTINCTCOUNT ( MyTable[File Name] ),
+    FILTER (
+        ADDCOLUMNS (
+            VALUES ( MyTable[File Name] ),
+            "TableCount", CALCULATE ( DISTINCTCOUNT ( MyTable[Table Name] ) )
+        ),
+        [TableCount] = 1
+    ),
+    MyTable[Breach] = 1
+)
 
 
 
