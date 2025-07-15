@@ -1,3 +1,15 @@
+
+WeekLabel = 
+VAR StartDate = STARTOFWEEK('YourTable'[Date], DAY.MONDAY)
+VAR EndDate = StartDate + 6
+RETURN FORMAT(StartDate, "mmm d") & " - " & FORMAT(EndDate, "mmm d")
+
+
+
+
+
+
+
 Average Time (Formatted) =
 VAR Avg = AVERAGE('YourTable'[TimeColumn])
 VAR TotalSeconds = Avg * 86400  -- convert day fraction to seconds
