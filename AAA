@@ -1,4 +1,14 @@
 
+WeekLabel =
+VAR CurrentDate = 'YourTable'[Date]
+VAR StartDate = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
+VAR EndDate = StartDate + 6
+RETURN FORMAT(StartDate, "mmm d") & " - " & FORMAT(EndDate, "mmm d")
+
+
+
+
+
 WeekLabel = 
 VAR StartDate = STARTOFWEEK('YourTable'[Date], DAY.MONDAY)
 VAR EndDate = StartDate + 6
