@@ -1,3 +1,23 @@
+Average Time (Formatted) =
+VAR Avg = AVERAGE('YourTable'[TimeColumn])
+VAR TotalSeconds = Avg * 86400  -- convert day fraction to seconds
+VAR Hours = INT(TotalSeconds / 3600)
+VAR Minutes = INT(MOD(TotalSeconds, 3600) / 60)
+VAR Seconds = INT(MOD(TotalSeconds, 60))
+VAR Period = IF(Hours < 12, "AM", "PM")
+VAR DisplayHour = IF(Hours = 0 || Hours = 12, 12, MOD(Hours, 12))
+RETURN
+FORMAT(DisplayHour, "00") & ":" &
+FORMAT(Minutes, "00") & ":" &
+FORMAT(Seconds, "00") & " " & Period
+
+
+
+
+
+
+
+
 BreachFileCountNoDuplication =
 CALCULATE (
     DISTINCTCOUNT ( MyTable[File Name] ),
