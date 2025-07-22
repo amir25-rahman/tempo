@@ -1,4 +1,12 @@
 
+date_cols = [col for col in self.df.columns 
+             if re.search(r'(^|_)(date|dt|created|updated|modified)($|_)', col.lower())]
+
+
+
+
+
+
 WeekLabel =
 VAR CurrentDate = 'YourTable'[Date]
 VAR StartDate = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
