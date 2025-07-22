@@ -5,218 +5,338 @@ VAR StartDate = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
 VAR EndDate = StartDate + 6
 RETURN FORMAT(StartDate, "mmm d") & " - " & FORMAT(EndDate, "mmm d")
 
-
-
-
-
-WeekLabel = 
-VAR StartDate = STARTOFWEEK('YourTable'[Date], DAY.MONDAY)
-VAR EndDate = StartDate + 6
-RETURN FORMAT(StartDate, "mmm d") & " - " & FORMAT(EndDate, "mmm d")
-
-
-
-
-
-
-
-Average Time (Formatted) =
-VAR Avg = AVERAGE('YourTable'[TimeColumn])
-VAR TotalSeconds = Avg * 86400  -- convert day fraction to seconds
-VAR Hours = INT(TotalSeconds / 3600)
-VAR Minutes = INT(MOD(TotalSeconds, 3600) / 60)
-VAR Seconds = INT(MOD(TotalSeconds, 60))
-VAR Period = IF(Hours < 12, "AM", "PM")
-VAR DisplayHour = IF(Hours = 0 || Hours = 12, 12, MOD(Hours, 12))
-RETURN
-FORMAT(DisplayHour, "00") & ":" &
-FORMAT(Minutes, "00") & ":" &
-FORMAT(Seconds, "00") & " " & Period
-
-
-
-
-
-
-
-
-BreachFileCountNoDuplication =
-CALCULATE (
-    DISTINCTCOUNT ( MyTable[File Name] ),
-    FILTER (
-        ADDCOLUMNS (
-            VALUES ( MyTable[File Name] ),
-            "TableCount", CALCULATE ( DISTINCTCOUNT ( MyTable[Table Name] ) )
-        ),
-        [TableCount] = 1
-    ),
-    MyTable[Breach] = 1
-)
-
-
-
-
-
-DistinctFileCount = 
-CALCULATE(
-    DISTINCTCOUNT(MyTable[File Name]),
-    ALLEXCEPT(MyTable, MyTable[Business Date], MyTable[App Name]),
-    MyTable[Breach] = 1
-)
-
-
-
-
-
-
-
-
-import tarfile
-import pickle
-
-# Open the .tar.gz archive
-with tarfile.open("your_archive.tar.gz", "r:gz") as tar:
-    # List all files in the archive
-    members = tar.getmembers()
-    
-    # Print filenames (optional, for inspection)
-    for member in members:
-        print(member.name)
-
-    # Find the pickle file (by name or extension)
-    pickle_member = next(m for m in members if m.name.endswith('.pkl'))
-
-    # Extract and load the pickle file
-    with tar.extractfile(pickle_member) as f:
-        data = pickle.load(f)
-
-
-
-
-
-
-
+info()
+nunique()
+isnull().sum()
+duplicated().sum()
+describe()
 
 
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font
-from openpyxl.styles import Alignment
+import numpy as np
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import warnings
+import re
+from datetime import datetime
 
-def calculate_column_widths(df):
-    """
-    Calculate the maximum width needed for each column based on all content
-    including headers and data
-    """
-    # Initialize with header lengths
-    max_lengths = [len(str(col)) for col in df.columns]
-    
-    # Update with data lengths
-    for index, row in df.iterrows():
-        for i, value in enumerate(row):
-            max_lengths[i] = max(max_lengths[i], len(str(value)))
-    
-    # Add some padding for better visibility
-    return [length + 2 for length in max_lengths]
+warnings.filterwarnings('ignore')
 
-def export_dataframes_to_excel(dataframes_dict, output_file):
-    """
-    Export multiple dataframes to Excel with blue headers, white font, filters, 
-    and frozen header row. If a sheet named 'Owner' exists, it will wrap text in
-    the 'title' column. Additionally, hyperlinks will be added to the first column
-    with 'google.com/(cell value)' for each cell (except header).
-    
-    Parameters:
-    dataframes_dict (dict): Dictionary with sheet names as keys and dataframes as values
-    output_file (str): Name of the output Excel file
-    """
-    # Create Excel writer object
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # Export each dataframe and format immediately
-        for sheet_name, df in dataframes_dict.items():
-            # Write dataframe to sheet
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-            
-            # Get the worksheet
-            worksheet = writer.sheets[sheet_name]
-            
-            # Format header row
-            blue_fill = PatternFill(start_color='0000FF', end_color='0000FF', fill_type='solid')
-            white_font = Font(color='FFFFFF', bold=True)
-            
-            # Apply formatting to header row
-            for cell in worksheet[1]:
-                cell.fill = blue_fill
-                cell.font = white_font
-            
-            # Add filters
-            max_row = worksheet.max_row
-            max_col = worksheet.max_column
-            worksheet.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
-            
-            # Freeze the first row
-            worksheet.freeze_panes = 'A2'
-            
-            # Check if the sheet is 'Owner' and apply text wrapping to the 'title' column
-            if sheet_name == 'Owner':
-                # Find the index of the 'title' column
-                title_column_index = df.columns.get_loc('title') + 1  # +1 to match Excel column (1-based)
-                
-                # Apply text wrapping to all cells in the 'title' column
-                for row in worksheet.iter_rows(min_col=title_column_index, max_col=title_column_index, min_row=2, max_row=max_row):
-                    for cell in row:
-                        cell.alignment = Alignment(wrap_text=True)
-            
-            # Add hyperlinks to the first column (except header)
-            for row in worksheet.iter_rows(min_col=1, max_col=1, min_row=2, max_row=max_row):
+class SimpleDatasetAnalyzer:
+    def __init__(self, data_path):
+        """Simple dataset analyzer"""
+        if isinstance(data_path, str):
+            self.df = pd.read_csv(data_path)
+        else:
+            self.df = data_path
+        print(f"Loaded dataset: {len(self.df)} rows, {len(self.df.columns)} columns")
+
+    def analyze_and_export(self, output_path='dataset_summary.xlsx'):
+        """Create a simple one-page Excel summary"""
+        print("Analyzing dataset...")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Dataset Summary"
+
+        header_font = Font(bold=True, color='FFFFFF', size=12)
+        header_fill = PatternFill(start_color='0F243E', end_color='0F243E', fill_type='solid')
+        subheader_font = Font(bold=True, size=11)
+        border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                        top=Side(style='thin'), bottom=Side(style='thin'))
+
+        ws['A1'] = "DATASET SUMMARY REPORT"
+        ws['A1'].font = Font(bold=True, size=16)
+        ws.merge_cells('A1:E1')
+        ws['A1'].alignment = Alignment(horizontal='center')
+
+        current_row = 3
+
+        # BASIC INFO
+        ws[f'A{current_row}'] = "BASIC INFORMATION"
+        ws[f'A{current_row}'].font = subheader_font
+        current_row += 1
+
+        non_null_columns = self.df.columns[self.df.notnull().all()].tolist()
+        most_missing_col = self.df.isnull().sum().idxmax()
+        most_missing_count = self.df[most_missing_col].isnull().sum()
+
+        basic_info = [
+            ['Metric', 'Value'],
+            ['Total Rows', f"{len(self.df):,}"],
+            ['Total Columns', len(self.df.columns)],
+            ['Duplicate Rows', f"{self.df.duplicated().sum():,}"],
+            ['Complete Rows (No Nulls)', f"{self.df.dropna().shape[0]:,}"],
+            ['Columns with No Nulls', len(non_null_columns)],
+            ['Column with Most Missing Values', f"{most_missing_col} ({most_missing_count:,} missing)"]
+        ]
+
+        for i, (metric, value) in enumerate(basic_info):
+            ws[f'A{current_row}'] = metric
+            ws[f'B{current_row}'] = value
+            if i == 0:
+                ws[f'A{current_row}'].font = header_font
+                ws[f'B{current_row}'].font = header_font
+                ws[f'A{current_row}'].fill = header_fill
+                ws[f'B{current_row}'].fill = header_fill
+            ws[f'A{current_row}'].border = border
+            ws[f'B{current_row}'].border = border
+            current_row += 1
+
+        current_row += 1
+
+        # COLUMN ANALYSIS
+        ws[f'A{current_row}'] = "COLUMN ANALYSIS"
+        ws[f'A{current_row}'].font = subheader_font
+        current_row += 1
+
+        # Add "Duplicated Values" to header
+        column_data = [['Column', 'Data Type', 'Null Count', 'Null %', 'Unique Values', 'Duplicated Values', 'Sample Value']]
+
+        for col in self.df.columns:
+            null_count = self.df[col].isnull().sum()
+            null_pct = (null_count / len(self.df) * 100)
+            unique_count = self.df[col].nunique()
+            duplicated_values_count = len(self.df[col]) - unique_count  # duplicated count
+            sample_val = self.df[col].dropna().iloc[0] if not self.df[col].dropna().empty else 'N/A'
+            if isinstance(sample_val, str) and len(str(sample_val)) > 20:
+                sample_val = str(sample_val)[:20] + "..."
+            column_data.append([
+                col,
+                str(self.df[col].dtype),
+                f"{null_count:,}",
+                f"{null_pct:.1f}%",
+                f"{unique_count:,}",
+                f"{duplicated_values_count:,}",
+                str(sample_val)
+            ])
+
+        for i, row_data in enumerate(column_data):
+            for j, value in enumerate(row_data):
+                cell = ws.cell(row=current_row, column=j+1, value=value)
+                if i == 0:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                cell.border = border
+            current_row += 1
+
+        current_row += 1
+
+        # ID FIELD ANALYSIS
+        id_cols = [col for col in self.df.columns if re.search(r'\b(id|identifier|account|user|client)\b', col.lower()) or 'id' in col.lower()]
+
+        if id_cols:
+            ws[f'A{current_row}'] = "ID FIELD ANALYSIS"
+            ws[f'A{current_row}'].font = subheader_font
+            current_row += 1
+
+            id_data = [['Column', 'Total Values', 'Most Common Len', 'Common Len Count', 'Min Len', 'Max Len', 'Duplicated IDs']]
+
+            for col in id_cols:
+                col_str = self.df[col].astype(str)
+                lengths = col_str.str.len()
+                most_common_len = lengths.mode().iloc[0] if not lengths.mode().empty else 'N/A'
+                common_len_count = (lengths == most_common_len).sum() if most_common_len != 'N/A' else 'N/A'
+                duplicated_count = self.df[col].duplicated().sum()
+
+                id_data.append([
+                    col,
+                    f"{len(self.df):,}",
+                    most_common_len,
+                    f"{common_len_count:,}" if common_len_count != 'N/A' else 'N/A',
+                    lengths.min(),
+                    lengths.max(),
+                    f"{duplicated_count:,}"
+                ])
+
+            for i, row_data in enumerate(id_data):
+                for j, value in enumerate(row_data):
+                    cell = ws.cell(row=current_row, column=j+1, value=value)
+                    if i == 0:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                    cell.border = border
+                current_row += 1
+
+            current_row += 1
+
+        # DATE FIELD ANALYSIS
+        date_cols = [col for col in self.df.columns if re.search(r'\b(date|dt|created|updated|modified)\b', col.lower())]
+
+        if date_cols:
+            ws[f'A{current_row}'] = "DATE FIELD ANALYSIS"
+            ws[f'A{current_row}'].font = subheader_font
+            current_row += 1
+
+            date_data = [['Column', 'Valid Dates', 'Earliest Date', 'Latest Date', 'Date Range (Days)', 'Most Common Format', 'Invalid Dates']]
+
+            for col in date_cols:
+                # Try to parse dates
+                try:
+                    # Parse dates and extract date component only
+                    parsed_dates = pd.to_datetime(self.df[col], errors='coerce').dt.date
+                    valid_dates = pd.Series(parsed_dates).dropna()
+                    
+                    if len(valid_dates) > 0:
+                        earliest = str(valid_dates.min())
+                        latest = str(valid_dates.max())
+                        date_range = (valid_dates.max() - valid_dates.min()).days
+                        valid_count = len(valid_dates)
+                        invalid_count = len(self.df[col].dropna()) - valid_count
+                        
+                        # Try to identify the most common date format
+                        sample_values = self.df[col].dropna().head(10).astype(str)
+                        format_guess = self._guess_date_format(sample_values)
+                        
+                    else:
+                        earliest = 'No valid dates'
+                        latest = 'No valid dates'
+                        date_range = 'N/A'
+                        valid_count = 0
+                        invalid_count = len(self.df[col].dropna())
+                        format_guess = 'Unknown'
+
+                except Exception:
+                    # If parsing completely fails
+                    valid_count = 0
+                    invalid_count = len(self.df[col].dropna())
+                    earliest = 'Parse failed'
+                    latest = 'Parse failed'
+                    date_range = 'N/A'
+                    format_guess = 'Unknown'
+
+                date_data.append([
+                    col,
+                    f"{valid_count:,}",
+                    earliest,
+                    latest,
+                    f"{date_range:,}" if isinstance(date_range, int) else date_range,
+                    format_guess,
+                    f"{invalid_count:,}"
+                ])
+
+            for i, row_data in enumerate(date_data):
+                for j, value in enumerate(row_data):
+                    cell = ws.cell(row=current_row, column=j+1, value=value)
+                    if i == 0:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                    cell.border = border
+                current_row += 1
+
+            current_row += 1
+
+        # NUMERICAL SUMMARY (Exclude ID-like columns)
+        numeric_cols = [col for col in self.df.select_dtypes(include=[np.number]).columns if col not in id_cols]
+        if len(numeric_cols) > 0:
+            ws[f'A{current_row}'] = "NUMERICAL COLUMNS SUMMARY"
+            ws[f'A{current_row}'].font = subheader_font
+            current_row += 1
+
+            stats_data = [['Column', 'Min', 'Max', 'Mean', 'Std Dev', 'Zeros']]
+            for col in numeric_cols:
+                col_data = self.df[col].dropna()
+                if len(col_data) > 0:
+                    stats_data.append([
+                        col,
+                        f"{col_data.min():.2f}",
+                        f"{col_data.max():.2f}",
+                        f"{col_data.mean():.2f}",
+                        f"{col_data.std():.2f}",
+                        f"{(col_data == 0).sum():,}"
+                    ])
+
+            for i, row_data in enumerate(stats_data):
+                for j, value in enumerate(row_data):
+                    cell = ws.cell(row=current_row, column=j+1, value=value)
+                    if i == 0:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                    cell.border = border
+                current_row += 1
+
+            current_row += 1
+        
+
+        # DATA QUALITY SCORE
+        ws[f'A{current_row}'] = "DATA QUALITY SCORE"
+        ws[f'A{current_row}'].font = subheader_font
+        current_row += 1
+
+        total_cells = len(self.df) * len(self.df.columns)
+        missing_cells = self.df.isnull().sum().sum()
+        completeness = ((total_cells - missing_cells) / total_cells) * 100
+        uniqueness = 100 - (self.df.duplicated().sum() / len(self.df) * 100)
+
+        quality_data = [
+            ['Quality Metric', 'Score', 'Status'],
+            ['Data Completeness(Null Adj)', f"{completeness:.1f}%", 'Good' if completeness > 90 else 'Fair' if completeness > 70 else 'Poor'],
+            ['Data Uniqueness(Dup Adj)', f"{uniqueness:.1f}%", 'Good' if uniqueness > 95 else 'Fair' if uniqueness > 80 else 'Poor']
+        ]
+
+        for i, row_data in enumerate(quality_data):
+            for j, value in enumerate(row_data):
+                cell = ws.cell(row=current_row, column=j+1, value=value)
+                if i == 0:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                elif j == 2 and i > 0:
+                    if value == 'Good':
+                        cell.fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
+                    elif value == 'Fair':
+                        cell.fill = PatternFill(start_color='FFD700', end_color='FFD700', fill_type='solid')
+                    else:
+                        cell.fill = PatternFill(start_color='FFB6C1', end_color='FFB6C1', fill_type='solid')
+                cell.border = border
+            current_row += 1
+
+        for col_num in range(1, 8):  # Updated to 8 columns to accommodate date analysis
+            column_letter = get_column_letter(col_num)
+            max_length = 0
+            for row in ws.iter_rows(min_col=col_num, max_col=col_num):
                 for cell in row:
-                    cell_value = str(cell.value)  # Convert cell value to string
-                    url = f"http://google.com/{cell_value}"  # Construct the URL
-                    cell.hyperlink = url  # Add the hyperlink
-                    cell.style = 'Hyperlink'  # Optional: You can also style it as a hyperlink (blue text, underlined)
-            
-            # Calculate and set column widths (auto-fit)
-            column_widths = calculate_column_widths(df)
-            for i, width in enumerate(column_widths, 1):
-                column_letter = get_column_letter(i)
-                worksheet.column_dimensions[column_letter].width = width
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 25)
 
-# Example usage
+        wb.save(output_path)
+        print(f"Summary saved to: {output_path}")
+
+    def _guess_date_format(self, sample_values):
+        """Helper method to guess the most common date format"""
+        formats = []
+        
+        for value in sample_values:
+            value_str = str(value).strip()
+            
+            # Common date format patterns (excluding time)
+            if re.match(r'\d{4}-\d{2}-\d{2}', value_str):
+                formats.append('YYYY-MM-DD')
+            elif re.match(r'\d{2}/\d{2}/\d{4}', value_str):
+                formats.append('MM/DD/YYYY')
+            elif re.match(r'\d{2}-\d{2}-\d{4}', value_str):
+                formats.append('MM-DD-YYYY')
+            elif re.match(r'\d{4}/\d{2}/\d{2}', value_str):
+                formats.append('YYYY/MM/DD')
+            elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', value_str):
+                formats.append('M/D/YYYY')
+            elif re.match(r'\d{2}\.\d{2}\.\d{4}', value_str):
+                formats.append('DD.MM.YYYY')
+            elif re.match(r'\d{8}', value_str):
+                formats.append('YYYYMMDD')
+            else:
+                formats.append('Mixed/Unknown')
+        
+        # Return most common format
+        if formats:
+            return max(set(formats), key=formats.count)
+        else:
+            return 'Unknown'
+
+
+
 if __name__ == "__main__":
-    # Sample dataframes (replace with your actual dataframes)
-    product_df = pd.DataFrame({
-        'product_id': [1, 2, 3],
-        'name': ['Product A', 'Product B', 'Product C'],
-        'price': [10.99, 20.99, 15.99]
-    })
-    
-    customers_df = pd.DataFrame({
-        'customer_id': [1, 2, 3],
-        'name': ['John Doe', 'Jane Smith', 'Bob Johnson'],
-        'email': ['john@example.com', 'jane@example.com', 'bob@example.com']
-    })
-    
-    supplier_df = pd.DataFrame({
-        'supplier_id': [1, 2, 3],
-        'name': ['Supplier X', 'Supplier Y', 'Supplier Z'],
-        'contact': ['123-456-7890', '234-567-8901', '345-678-9012']
-    })
-    
-    # Owner sheet with a 'title' column
-    owner_df = pd.DataFrame({
-        'owner_id': [1, 2],
-        'title': ['CEO of Company A with long title', 'CTO of Company B with an even longer title that should wrap'],
-        'name': ['Alice', 'Bob']
-    })
-    
-    # Create dictionary of dataframes
-    dataframes = {
-        'Products': product_df,
-        'Customers': customers_df,
-        'Suppliers': supplier_df,
-        'Owner': owner_df  # Add the Owner sheet
-    }
-    
-    # Export to Excel with formatting
-    export_dataframes_to_excel(dataframes, 'output.xlsx')
+    # Change path to your CSV file location
+    analyzer = SimpleDatasetAnalyzer('intro_stage_raw.csv')
+    analyzer.analyze_and_export('mydata.xlsx')
