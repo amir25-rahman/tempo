@@ -1,3 +1,142 @@
+import pandas as pd
+import numpy as np
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+import warnings
+import re
+from datetime import datetime
+
+warnings.filterwarnings('ignore')
+
+class SimpleDatasetAnalyzer:
+    def __init__(self, data_path):
+        """Simple dataset analyzer"""
+        if isinstance(data_path, str):
+            self.df = pd.read_csv(data_path)
+        else:
+            self.df = data_path
+        print(f"Loaded dataset: {len(self.df)} rows, {len(self.df.columns)} columns")
+
+    def analyze_and_export(self, output_path='dataset_summary.xlsx'):
+        """Create a simple one-page Excel summary"""
+        print("Analyzing dataset...")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Dataset Summary"
+
+        header_font = Font(bold=True, color='FFFFFF', size=12)
+        header_fill = PatternFill(start_color='0F243E', end_color='0F243E', fill_type='solid')
+        subheader_font = Font(bold=True, size=11)
+        border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                        top=Side(style='thin'), bottom=Side(style='thin'))
+
+        ws['A1'] = "DATASET SUMMARY REPORT"
+        ws['A1'].font = Font(bold=True, size=16)
+        ws.merge_cells('A1:I1')
+        ws['A1'].alignment = Alignment(horizontal='center')
+
+        current_row = 3
+
+        # BASIC INFO
+        ws[f'A{current_row}'] = "BASIC INFORMATION"
+        ws[f'A{current_row}'].font = subheader_font
+        current_row += 1
+
+        non_null_columns = self.df.columns[self.df.notnull().all()].tolist()
+        most_missing_col = self.df.isnull().sum().idxmax()
+        most_missing_count = self.df[most_missing_col].isnull().sum()
+
+        basic_info = [
+            ['Metric', 'Value'],
+            ['Total Rows', f"{len(self.df):,}"],
+            ['Total Columns', len(self.df.columns)],
+            ['Duplicate Rows', f"{self.df.duplicated().sum():,}"],
+            ['Complete Rows (No Nulls)', f"{self.df.dropna().shape[0]:,}"],
+            ['Columns with No Nulls', len(non_null_columns)],
+            ['Column with Most Missing Values', f"{most_missing_col} ({most_missing_count:,} missing)"]
+        ]
+
+        for i, (metric, value) in enumerate(basic_info):
+            ws[f'A{current_row}'] = metric
+            ws[f'B{current_row}'] = value
+            if i == 0:
+                ws[f'A{current_row}'].font = header_font
+                ws[f'B{current_row}'].font = header_font
+                ws[f'A{current_row}'].fill = header_fill
+                ws[f'B{current_row}'].fill = header_fill
+            ws[f'A{current_row}'].border = border
+            ws[f'B{current_row}'].border = border
+            current_row += 1
+
+        current_row += 1
+
+        # COLUMN ANALYSIS
+        ws[f'A{current_row}'] = "COLUMN ANALYSIS"
+        ws[f'A{current_row}'].font = subheader_font
+        current_row += 1
+
+        special_char_pattern = re.compile(r'[^\w\s]')
+
+        column_data = [['Column', 'Data Type', 'Null Count', 'Null %', 'Unique %', 'Duplicated %', 'Special Char Count', 'Sample Value']]
+
+        for col in self.df.columns:
+            col_series = self.df[col]
+            null_count = col_series.isnull().sum()
+            null_pct = (null_count / len(self.df) * 100)
+            non_null_series = col_series.dropna()
+            total_vals = len(non_null_series)
+            unique_vals = non_null_series.nunique()
+            duplicated_vals = total_vals - unique_vals
+            unique_pct = (unique_vals / total_vals * 100) if total_vals > 0 else 0
+            duplicated_pct = (duplicated_vals / total_vals * 100) if total_vals > 0 else 0
+            special_char_count = col_series.astype(str).apply(lambda x: bool(special_char_pattern.search(x))).sum()
+            sample_val = non_null_series.iloc[0] if not non_null_series.empty else 'N/A'
+            if isinstance(sample_val, str) and len(str(sample_val)) > 20:
+                sample_val = str(sample_val)[:20] + "..."
+            column_data.append([
+                col,
+                str(col_series.dtype),
+                f"{null_count:,}",
+                f"{null_pct:.1f}%",
+                f"{unique_pct:.1f}%",
+                f"{duplicated_pct:.1f}%",
+                f"{special_char_count:,}",
+                str(sample_val)
+            ])
+
+        for i, row_data in enumerate(column_data):
+            for j, value in enumerate(row_data):
+                cell = ws.cell(row=current_row, column=j+1, value=value)
+                if i == 0:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                cell.border = border
+            current_row += 1
+
+        wb.save(output_path)
+        print(f"Summary saved to: {output_path}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 date_cols = [col for col in self.df.columns 
              if re.search(r'(^|_)(date|dt|created|updated|modified)($|_)', col.lower())]
