@@ -1,14 +1,12 @@
-ShowIfTable1SelectedInColumn = 
-VAR SelectedSysNames = VALUES(Table1[sys name])
-VAR ThisRowText = Table2[ColumnName]
-
+ShowRow = 
+VAR SelectedSysName = SELECTEDVALUE(Sheet1[Column1])
 RETURN
--- Check if ANY selected sys name is in this row's text
-SUMX(
-    SelectedSysNames,
-    IF(CONTAINSSTRING(ThisRowText, [sys name]), 1, 0)
-) > 0
-
+IF (
+    NOT ISBLANK(SelectedSysName) &&
+    CONTAINSSTRING(MAX(Sheet2[Column1]), SelectedSysName),
+    1,
+    0
+)
 
 
 import re
