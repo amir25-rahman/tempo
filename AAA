@@ -1,4 +1,14 @@
 
+import re
+
+text = "T2_1dbg_7"
+match = re.search(r'^[^_]*_((?:.*?))(?=_[0-9])', text)
+if match:
+    print(match.group(1))  # Output: 1dbg
+
+
+
+
 special_char_pattern = r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]'
 
 
