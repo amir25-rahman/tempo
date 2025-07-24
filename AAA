@@ -1,14 +1,13 @@
-ShowIfMatchesSelected = 
-VAR SelectedNames = VALUES(Table1[sys name])
-VAR CurrentRowText = Table2[ColumnName]
+ShowIfTable1SelectedInColumn = 
+VAR SelectedSysNames = VALUES(Table1[sys name])
+VAR ThisRowText = Table2[ColumnName]
 
 RETURN
+-- Check if ANY selected sys name is in this row's text
 SUMX(
-    SelectedNames,
-    IF(CONTAINSSTRING(CurrentRowText, [sys name]), 1, 0)
+    SelectedSysNames,
+    IF(CONTAINSSTRING(ThisRowText, [sys name]), 1, 0)
 ) > 0
-
-
 
 
 
