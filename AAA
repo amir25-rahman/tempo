@@ -1,3 +1,16 @@
+ShowIfMatchesSelected = 
+VAR SelectedNames = VALUES(Table1[sys name])
+VAR CurrentRowText = Table2[ColumnName]
+
+RETURN
+SUMX(
+    SelectedNames,
+    IF(CONTAINSSTRING(CurrentRowText, [sys name]), 1, 0)
+) > 0
+
+
+
+
 
 import re
 
