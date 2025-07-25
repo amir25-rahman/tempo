@@ -1,3 +1,27 @@
+Showkou = 
+VAR SelectedSSN = SELECTEDVALUE('Combined Analysis'[SoR Name])
+VAR SelectedTable = SELECTEDVALUE('Combined Analysis'[map[table]])
+
+RETURN
+IF (
+    ISBLANK(SelectedSSN) || ISBLANK(SelectedTable),
+    0,
+    CALCULATE (
+        COUNTROWS(Sheet1),
+        FILTER (
+            Sheet1,
+            CONTAINSSTRING(Sheet1[filter criteria], SelectedSSN)
+            && Sheet1[table] = SelectedTable
+        )
+    )
+)
+
+
+
+
+
+
+
 ShowRow =
 IF (
     NOT ISBLANK(Sheet1[Column1]) &&
