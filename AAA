@@ -1,3 +1,24 @@
+
+
+ShowRow =
+VAR CurrentRowValue = Sheet1[Column1]
+RETURN
+IF (
+    NOT ISBLANK(CurrentRowValue) &&
+    CALCULATE(
+        COUNTROWS(
+            FILTER(Sheet2, CONTAINSSTRING(Sheet2[Column1], CurrentRowValue))
+        )
+    ) > 0,
+    1,
+    0
+)
+
+
+
+
+
+
 ShowRow = 
 VAR SelectedSysName = SELECTEDVALUE(Sheet1[Column1])
 RETURN
