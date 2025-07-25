@@ -1,13 +1,11 @@
 ShowRow =
-VAR CurrentRowValue = Sheet1[Column1]
-RETURN
 IF (
-    NOT ISBLANK(CurrentRowValue) &&
-    CALCULATE(
-        COUNTROWS(
-            FILTER(
+    NOT ISBLANK(Sheet1[Column1]) &&
+    CALCULATE (
+        COUNTROWS (
+            FILTER (
                 Sheet2,
-                CONTAINSSTRING(Sheet2[Column1], CurrentRowValue) &&
+                CONTAINSSTRING(Sheet2[Column1], Sheet1[Column1]) &&
                 Sheet2[Table Name] IN VALUES(Map[Table Name])
             )
         )
