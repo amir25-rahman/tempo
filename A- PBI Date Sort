@@ -1,0 +1,43 @@
+WorkWeekGroup = 
+VAR CurrentDate = Sheet1[Dates]
+
+-- Check if current date is a workday (Mon-Fri and NOT holiday)
+VAR IsWorkday =
+    WEEKDAY(CurrentDate, 2) <= 5 &&
+    NOT(CONTAINS(Holidays, Holidays[Date], CurrentDate))
+
+-- Get the Monday of the current week (Monday = 1)
+VAR WeekStart =
+    CurrentDate - WEEKDAY(CurrentDate, 2) + 1
+
+-- Get the Friday of the current week
+VAR WeekEnd = WeekStart + 4
+
+RETURN
+IF(
+    IsWorkday,
+    FORMAT(WeekStart, "mmm d") & " - " & FORMAT(WeekEnd, "mmm d"),
+    BLANK()
+)
+
+
+
+
+
+Holidays = DATATABLE(
+    "Date", DATETIME,
+    {
+        { "2025-01-01" },  // New Year's Day
+        { "2025-01-20" },  // Martin Luther King Jr. Day
+        { "2025-02-17" },  // Presidents' Day
+        { "2025-05-26" },  // Memorial Day
+        { "2025-06-19" },  // Juneteenth
+        { "2025-07-04" },  // Independence Day
+        { "2025-09-01" },  // Labor Day
+        { "2025-10-13" },  // Columbus Day
+        { "2025-11-11" },  // Veterans Day
+        { "2025-11-27" },  // Thanksgiving Day
+        { "2025-12-25" }   // Christmas Day
+    }
+)
+
