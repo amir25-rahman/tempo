@@ -1,3 +1,36 @@
+-- Replace 'your_table' with your actual table name
+
+WITH total_rows AS (
+    SELECT COUNT(*) AS total FROM your_table
+),
+column_stats AS (
+    SELECT
+        'column_name' AS column_name,
+        pg_typeof(column_name)::text AS data_type,
+        COUNT(*) AS non_null_count,
+        COUNT(DISTINCT column_name) AS unique_count,
+        COUNT(*) - COUNT(DISTINCT column_name) AS duplicate_count,
+        SUM(CASE WHEN column_name IS NULL THEN 1 ELSE 0 END) AS null_count,
+        SUM(CASE WHEN column_name ~ '[^a-zA-Z0-9]' THEN 1 ELSE 0 END) AS special_char_count
+    FROM your_table, total_rows
+)
+SELECT
+    column_name,
+    data_type,
+    total,
+    ROUND(100.0 * duplicate_count / total, 2) AS duplicate_percent,
+    null_count,
+    ROUND(100.0 * null_count / total, 2) AS null_percent,
+    special_char_count,
+    ROUND(100.0 * unique_count / total, 2) AS unique_percent
+FROM column_stats, total_rows;
+
+
+
+
+
+
+
 WorkWeekGroup = 
 VAR CurrentDate = Sheet1[Dates]
 
