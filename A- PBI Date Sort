@@ -1,3 +1,45 @@
+WITH column_info AS (
+    SELECT 
+        column_name, 
+        data_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'your_table'
+),
+metrics AS (
+    SELECT
+        col.column_name,
+        col.data_type,
+        (SELECT COUNT(*) FROM your_table WHERE t.(col.column_name)::text IS NULL) AS null_count,
+        (SELECT COUNT(DISTINCT t.(col.column_name)::text) FROM your_table t) AS unique_count,
+        (SELECT COUNT(*) - COUNT(DISTINCT t.(col.column_name)::text) FROM your_table t) AS repeated_count,
+        CASE 
+            WHEN col.data_type IN ('text', 'varchar', 'char') THEN
+                (SELECT SUM(LENGTH(t.(col.column_name)::text) 
+                            - LENGTH(REGEXP_REPLACE(t.(col.column_name)::text, '[^A-Za-z0-9]', '', 'g')))
+                 FROM your_table t
+                 WHERE t.(col.column_name)::text IS NOT NULL)
+            ELSE NULL
+        END AS special_char_count
+    FROM column_info col
+)
+SELECT * FROM metrics;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 -- Total row count
 SELECT COUNT(*) AS total_rows FROM your_table;
 
