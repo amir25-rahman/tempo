@@ -1,3 +1,141 @@
+
+-- STEP 1: Get column names first
+-- Replace 'your_table_name' with your actual table name
+
+-- For MySQL:
+DESCRIBE your_table_name;
+
+-- For PostgreSQL:
+-- \d your_table_name
+
+-- For SQL Server:
+-- SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'your_table_name';
+
+-- For SQLite:
+-- PRAGMA table_info(your_table_name);
+
+-- =============================================================================
+-- STEP 2: Dynamic query generation using INFORMATION_SCHEMA (PostgreSQL/MySQL/SQL Server)
+-- =============================================================================
+
+-- First, run this query to generate the UNION ALL statements:
+SELECT 
+    CONCAT(
+        'SELECT ''', COLUMN_NAME, ''' as column_name, ',
+        'COUNT(*) as total_count, ',
+        'COUNT(', COLUMN_NAME, ') as non_null_count, ',
+        'COUNT(*) - COUNT(', COLUMN_NAME, ') as null_count, ',
+        'COUNT(DISTINCT ', COLUMN_NAME, ') as unique_count, ',
+        'COUNT(', COLUMN_NAME, ') - COUNT(DISTINCT ', COLUMN_NAME, ') as duplicate_count ',
+        'FROM your_table_name'
+    ) as query_part
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'your_table_name'
+  AND TABLE_SCHEMA = 'your_database_name'  -- Add this line if needed
+ORDER BY ORDINAL_POSITION;
+
+-- =============================================================================
+-- STEP 3: Complete dynamic analysis query (PostgreSQL example)
+-- =============================================================================
+
+WITH column_stats AS (
+    SELECT 
+        column_name,
+        total_count,
+        non_null_count,
+        null_count,
+        unique_count,
+        duplicate_count
+    FROM (
+        -- This part needs to be built dynamically from the results above
+        -- Example for a table with columns: id, name, email, age
+        SELECT 'id' as column_name, 
+               COUNT(*) as total_count,
+               COUNT(id) as non_null_count,
+               COUNT(*) - COUNT(id) as null_count,
+               COUNT(DISTINCT id) as unique_count,
+               COUNT(id) - COUNT(DISTINCT id) as duplicate_count
+        FROM your_table_name
+        
+        UNION ALL
+        
+        SELECT 'name' as column_name,
+               COUNT(*) as total_count,
+               COUNT(name) as non_null_count,
+               COUNT(*) - COUNT(name) as null_count,
+               COUNT(DISTINCT name) as unique_count,
+               COUNT(name) - COUNT(DISTINCT name) as duplicate_count
+        FROM your_table_name
+        
+        UNION ALL
+        
+        SELECT 'email' as column_name,
+               COUNT(*) as total_count,
+               COUNT(email) as non_null_count,
+               COUNT(*) - COUNT(email) as null_count,
+               COUNT(DISTINCT email) as unique_count,
+               COUNT(email) - COUNT(DISTINCT email) as duplicate_count
+        FROM your_table_name
+        
+        UNION ALL
+        
+        SELECT 'age' as column_name,
+               COUNT(*) as total_count,
+               COUNT(age) as non_null_count,
+               COUNT(*) - COUNT(age) as null_count,
+               COUNT(DISTINCT age) as unique_count,
+               COUNT(age) - COUNT(DISTINCT age) as duplicate_count
+        FROM your_table_name
+    ) stats
+)
+SELECT 
+    column_name,
+    total_count,
+    null_count,
+    non_null_count,
+    unique_count,
+    duplicate_count,
+    ROUND((null_count::numeric / total_count * 100), 2) as null_percentage,
+    ROUND((unique_count::numeric / NULLIF(non_null_count, 0) * 100), 2) as unique_percentage,
+    ROUND((duplicate_count::numeric / NULLIF(non_null_count, 0) * 100), 2) as duplicate_percentage
+FROM column_stats
+ORDER BY column_name;
+
+-- =============================================================================
+-- ALTERNATIVE: One-shot query generator for PostgreSQL
+-- =============================================================================
+
+-- Run this to get the complete query as a string that you can then execute:
+SELECT 
+    'WITH column_stats AS (' || CHR(10) ||
+    STRING_AGG(
+        'SELECT ''' || column_name || ''' as column_name, ' ||
+        'COUNT(*) as total_count, ' ||
+        'COUNT(' || column_name || ') as non_null_count, ' ||
+        'COUNT(*) - COUNT(' || column_name || ') as null_count, ' ||
+        'COUNT(DISTINCT ' || column_name || ') as unique_count, ' ||
+        'COUNT(' || column_name || ') - COUNT(DISTINCT ' || column_name || ') as duplicate_count ' ||
+        'FROM your_table_name',
+        CHR(10) || 'UNION ALL' || CHR(10)
+        ORDER BY ordinal_position
+    ) || CHR(10) ||
+    ') SELECT column_name, total_count, null_count, non_null_count, unique_count, duplicate_count, ' ||
+    'ROUND((null_count::numeric / total_count * 100), 2) as null_percentage, ' ||
+    'ROUND((unique_count::numeric / NULLIF(non_null_count, 0) * 100), 2) as unique_percentage, ' ||
+    'ROUND((duplicate_count::numeric / NULLIF(non_null_count, 0) * 100), 2) as duplicate_percentage ' ||
+    'FROM column_stats ORDER BY column_name;' as complete_query
+FROM information_schema.columns 
+WHERE table_name = 'your_table_name'
+  AND table_schema = 'your_schema_name';  -- Replace with your schema
+
+
+
+
+
+
+
+
+
 WITH column_info AS (
     SELECT 
         column_name, 
