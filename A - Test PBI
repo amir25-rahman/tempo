@@ -1,0 +1,211 @@
+
+
+
+
+
+
+
+#######################################################################
+#######################################################################
+
+-- Enhanced DESCRIBE function for MySQL - Tested Version
+-- Creates comprehensive column statistics including null%, unique%, duplicate%
+
+DROP PROCEDURE IF EXISTS enhanced_describe;
+
+DELIMITER $$
+
+CREATE PROCEDURE enhanced_describe(IN table_name_param VARCHAR(255))
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE col_name VARCHAR(255);
+    DECLARE col_type VARCHAR(255);
+    DECLARE col_nullable VARCHAR(10);
+    DECLARE col_default TEXT;
+    DECLARE col_position INT;
+    
+    DECLARE col_cursor CURSOR FOR
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = table_name_param
+        AND TABLE_SCHEMA = DATABASE()
+        ORDER BY ORDINAL_POSITION;
+        
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    -- Create temporary table for results
+    DROP TEMPORARY TABLE IF EXISTS temp_describe_results;
+    CREATE TEMPORARY TABLE temp_describe_results (
+        column_name VARCHAR(255),
+        data_type VARCHAR(255),
+        is_nullable VARCHAR(10),
+        column_default TEXT,
+        total_rows BIGINT,
+        null_count BIGINT,
+        null_percentage DECIMAL(5,2),
+        non_null_count BIGINT,
+        unique_count BIGINT,
+        unique_percentage DECIMAL(5,2),
+        duplicate_count BIGINT,
+        duplicate_percentage DECIMAL(5,2),
+        most_frequent_value TEXT,
+        frequency_count BIGINT,
+        ordinal_position INT
+    );
+    
+    OPEN col_cursor;
+    
+    read_loop: LOOP
+        FETCH col_cursor INTO col_name, col_type, col_nullable, col_default, col_position;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        -- Build dynamic SQL for each column with proper escaping
+        SET @sql = CONCAT('
+            INSERT INTO temp_describe_results
+            SELECT 
+                ''', col_name, ''' as column_name,
+                ''', col_type, ''' as data_type,
+                ''', col_nullable, ''' as is_nullable,
+                ''', IFNULL(REPLACE(col_default, '''', ''''''), 'NULL'), ''' as column_default,
+                stats.total_rows,
+                stats.null_count,
+                stats.null_percentage,
+                stats.non_null_count,
+                stats.unique_count,
+                stats.unique_percentage,
+                stats.duplicate_count,
+                stats.duplicate_percentage,
+                freq.most_frequent_value,
+                freq.frequency_count,
+                ', col_position, ' as ordinal_position
+            FROM (
+                SELECT 
+                    COUNT(*) as total_rows,
+                    SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) as null_count,
+                    CASE 
+                        WHEN COUNT(*) = 0 THEN 0.00 
+                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
+                    END as null_percentage,
+                    SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) as non_null_count,
+                    COUNT(DISTINCT `', col_name, '`) as unique_count,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
+                        ELSE ROUND((COUNT(DISTINCT `', col_name, '`) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
+                    END as unique_percentage,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0 
+                        ELSE SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`) 
+                    END as duplicate_count,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
+                        ELSE ROUND(((SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`)) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
+                    END as duplicate_percentage
+                FROM `', table_name_param, '`
+            ) stats
+            CROSS JOIN (
+                SELECT 
+                    COALESCE(freq_val, ''<No Data>'') as most_frequent_value,
+                    COALESCE(freq_cnt, 0) as frequency_count
+                FROM (
+                    SELECT 
+                        CAST(`', col_name, '` AS CHAR(500)) as freq_val,
+                        COUNT(*) as freq_cnt
+                    FROM `', table_name_param, '`
+                    WHERE `', col_name, '` IS NOT NULL
+                    GROUP BY `', col_name, '`
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 1
+                ) most_freq
+                UNION ALL
+                SELECT ''<No Data>'' as most_frequent_value, 0 as frequency_count
+                WHERE NOT EXISTS (SELECT 1 FROM `', table_name_param, '` WHERE `', col_name, '` IS NOT NULL)
+                LIMIT 1
+            ) freq'
+        );
+        
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+        
+    END LOOP;
+    
+    CLOSE col_cursor;
+    
+    -- Return results with clean headers
+    SELECT 
+        column_name as 'Column Name',
+        data_type as 'Data Type',
+        is_nullable as 'Nullable',
+        column_default as 'Default Value',
+        total_rows as 'Total Rows',
+        null_count as 'Null Count',
+        null_percentage as 'Null %',
+        non_null_count as 'Non-Null Count',
+        unique_count as 'Unique Count',
+        unique_percentage as 'Unique %',
+        duplicate_count as 'Duplicate Count',
+        duplicate_percentage as 'Duplicate %',
+        most_frequent_value as 'Most Frequent Value',
+        frequency_count as 'Frequency Count'
+    FROM temp_describe_results
+    ORDER BY ordinal_position;
+    
+    DROP TEMPORARY TABLE temp_describe_results;
+END$$
+
+DELIMITER ;
+
+-- Usage:
+-- CALL enhanced_describe('your_table_name');
+
+-- Examples:
+-- CALL enhanced_describe('users');
+-- CALL enhanced_describe('orders');
+-- CALL enhanced_describe('products');
+
+-- Test with sample data (optional - uncomment to test)
+/*
+-- Create test table
+CREATE TABLE test_sample (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50),
+    email VARCHAR(100),
+    age INT,
+    status ENUM('active', 'inactive') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample data
+INSERT INTO test_sample (name, email, age, status) VALUES
+('John Doe', 'john@email.com', 25, 'active'),
+('Jane Smith', 'jane@email.com', 30, 'active'),
+('Bob Johnson', NULL, 25, 'inactive'),
+('Alice Brown', 'alice@email.com', NULL, 'active'),
+('Charlie Wilson', 'charlie@email.com', 25, 'active'),
+('David Lee', 'david@email.com', 25, 'active'),
+(NULL, 'unknown@email.com', 40, 'inactive');
+
+-- Test the procedure
+CALL enhanced_describe('test_sample');
+
+-- Clean up
+DROP TABLE test_sample;
+*/
+
+-- Create and test with sample data
+CREATE TABLE test_sample (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50),
+    email VARCHAR(100),
+    age INT
+);
+
+INSERT INTO test_sample (name, email, age) VALUES
+('John', 'john@email.com', 25),
+('Jane', NULL, 30),
+('Bob', 'bob@email.com', 25);
+
+CALL enhanced_describe('test_sample')
+
