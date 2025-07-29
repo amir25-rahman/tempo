@@ -1,4 +1,130 @@
 
+-- Enhanced DESCRIBE for MySQL with Null % and Unique % columns
+-- Replace 'your_table_name' with your actual table name
+
+-- Method 1: Dynamic query that calculates stats for all columns at once
+SET @table_name = 'your_table_name';
+SET @database_name = DATABASE();
+
+SET @sql = (
+    SELECT CONCAT(
+        'SELECT c.COLUMN_NAME as Field, ',
+        'c.COLUMN_TYPE as Type, ',
+        'c.IS_NULLABLE as `Null`, ',
+        'c.COLUMN_DEFAULT as `Default`, ',
+        'c.EXTRA as Extra, ',
+        'stats.null_pct as `Null %`, ',
+        'stats.unique_pct as `Unique %`, ',
+        'stats.duplicate_pct as `Duplicate %` ',
+        'FROM INFORMATION_SCHEMA.COLUMNS c ',
+        'LEFT JOIN (',
+        GROUP_CONCAT(
+            CONCAT(
+                'SELECT ''', COLUMN_NAME, ''' as col_name, ',
+                'ROUND((COUNT(*) - COUNT(', COLUMN_NAME, ')) / COUNT(*) * 100, 2) as null_pct, ',
+                'ROUND(COUNT(DISTINCT ', COLUMN_NAME, ') / NULLIF(COUNT(', COLUMN_NAME, '), 0) * 100, 2) as unique_pct, ',
+                'ROUND((COUNT(', COLUMN_NAME, ') - COUNT(DISTINCT ', COLUMN_NAME, ')) / NULLIF(COUNT(', COLUMN_NAME, '), 0) * 100, 2) as duplicate_pct ',
+                'FROM ', @table_name
+            )
+            SEPARATOR ' UNION ALL '
+        ),
+        ') as stats ON c.COLUMN_NAME = stats.col_name ',
+        'WHERE c.TABLE_NAME = ''', @table_name, ''' ',
+        'AND c.TABLE_SCHEMA = ''', @database_name, ''' ',
+        'ORDER BY c.ORDINAL_POSITION'
+    )
+    FROM INFORMATION_SCHEMA.COLUMNS 
+    WHERE TABLE_NAME = @table_name 
+    AND TABLE_SCHEMA = @database_name
+);
+
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- =============================================================================
+-- Method 2: Manual approach (if dynamic doesn't work)
+-- Step 1: Get column names first
+-- =============================================================================
+
+SELECT COLUMN_NAME 
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'your_table_name' 
+AND TABLE_SCHEMA = DATABASE()
+ORDER BY ORDINAL_POSITION;
+
+-- Step 2: Build the query manually using the column names from above
+-- Replace col1, col2, col3... with your actual column names
+
+SELECT 
+    c.COLUMN_NAME as 'Field',
+    c.COLUMN_TYPE as 'Type',
+    c.IS_NULLABLE as 'Null',
+    c.COLUMN_DEFAULT as 'Default',
+    c.EXTRA as 'Extra',
+    stats.null_pct as 'Null %',
+    stats.unique_pct as 'Unique %',
+    stats.duplicate_pct as 'Duplicate %'
+FROM INFORMATION_SCHEMA.COLUMNS c
+LEFT JOIN (
+    SELECT 'col1' as col_name,
+           ROUND((COUNT(*) - COUNT(col1)) / COUNT(*) * 100, 2) as null_pct,
+           ROUND(COUNT(DISTINCT col1) / NULLIF(COUNT(col1), 0) * 100, 2) as unique_pct,
+           ROUND((COUNT(col1) - COUNT(DISTINCT col1)) / NULLIF(COUNT(col1), 0) * 100, 2) as duplicate_pct
+    FROM your_table_name
+    
+    UNION ALL
+    
+    SELECT 'col2' as col_name,
+           ROUND((COUNT(*) - COUNT(col2)) / COUNT(*) * 100, 2) as null_pct,
+           ROUND(COUNT(DISTINCT col2) / NULLIF(COUNT(col2), 0) * 100, 2) as unique_pct,
+           ROUND((COUNT(col2) - COUNT(DISTINCT col2)) / NULLIF(COUNT(col2), 0) * 100, 2) as duplicate_pct
+    FROM your_table_name
+    
+    UNION ALL
+    
+    SELECT 'col3' as col_name,
+           ROUND((COUNT(*) - COUNT(col3)) / COUNT(*) * 100, 2) as null_pct,
+           ROUND(COUNT(DISTINCT col3) / NULLIF(COUNT(col3), 0) * 100, 2) as unique_pct,
+           ROUND((COUNT(col3) - COUNT(DISTINCT col3)) / NULLIF(COUNT(col3), 0) * 100, 2) as duplicate_pct
+    FROM your_table_name
+    
+    -- Add more UNION ALL blocks for additional columns
+    
+) as stats ON c.COLUMN_NAME = stats.col_name
+WHERE c.TABLE_NAME = 'your_table_name'
+AND c.TABLE_SCHEMA = DATABASE()
+ORDER BY c.ORDINAL_POSITION;
+
+-- =============================================================================
+-- Method 3: Simple version to generate the UNION ALL statements
+-- =============================================================================
+
+SELECT CONCAT(
+    'SELECT ''', COLUMN_NAME, ''' as col_name, ',
+    'ROUND((COUNT(*) - COUNT(', COLUMN_NAME, ')) / COUNT(*) * 100, 2) as null_pct, ',
+    'ROUND(COUNT(DISTINCT ', COLUMN_NAME, ') / NULLIF(COUNT(', COLUMN_NAME, '), 0) * 100, 2) as unique_pct, ',
+    'ROUND((COUNT(', COLUMN_NAME, ') - COUNT(DISTINCT ', COLUMN_NAME, ')) / NULLIF(COUNT(', COLUMN_NAME, '), 0) * 100, 2) as duplicate_pct ',
+    'FROM your_table_name'
+) as union_statement
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'your_table_name' 
+AND TABLE_SCHEMA = DATABASE()
+ORDER BY ORDINAL_POSITION;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 -- STEP 1: Get column names first
 -- Replace 'your_table_name' with your actual table name
 
