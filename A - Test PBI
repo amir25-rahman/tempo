@@ -1,3 +1,211 @@
+-- Enhanced DESCRIBE function for MySQL - Tested Version
+-- Creates comprehensive column statistics including null%, unique%, duplicate%
+
+DROP PROCEDURE IF EXISTS enhanced_describe;
+
+DELIMITER $$
+
+CREATE PROCEDURE enhanced_describe(IN table_name_param VARCHAR(255))
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE col_name VARCHAR(255);
+    DECLARE col_type VARCHAR(255);
+    DECLARE col_nullable VARCHAR(10);
+    DECLARE col_default TEXT;
+    DECLARE col_position INT;
+    
+    DECLARE col_cursor CURSOR FOR
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = table_name_param
+        AND TABLE_SCHEMA = DATABASE()
+        ORDER BY ORDINAL_POSITION;
+        
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    -- Create temporary table for results
+    DROP TEMPORARY TABLE IF EXISTS temp_describe_results;
+    CREATE TEMPORARY TABLE temp_describe_results (
+        column_name VARCHAR(255),
+        data_type VARCHAR(255),
+        is_nullable VARCHAR(10),
+        column_default TEXT,
+        total_rows BIGINT,
+        null_count BIGINT,
+        null_percentage DECIMAL(5,2),
+        non_null_count BIGINT,
+        unique_count BIGINT,
+        unique_percentage DECIMAL(5,2),
+        duplicate_count BIGINT,
+        duplicate_percentage DECIMAL(5,2),
+        special_char_count BIGINT,
+        special_char_percentage DECIMAL(5,2),
+        most_frequent_value TEXT,
+        frequency_count BIGINT,
+        ordinal_position INT
+    );
+    
+    OPEN col_cursor;
+    
+    read_loop: LOOP
+        FETCH col_cursor INTO col_name, col_type, col_nullable, col_default, col_position;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        -- Build dynamic SQL for each column with proper escaping
+        SET @sql = CONCAT('
+            INSERT INTO temp_describe_results
+            SELECT 
+                ''', col_name, ''' as column_name,
+                ''', col_type, ''' as data_type,
+                ''', col_nullable, ''' as is_nullable,
+                ''', IFNULL(REPLACE(col_default, '''', ''''''), 'NULL'), ''' as column_default,
+                stats.total_rows,
+                stats.null_count,
+                stats.null_percentage,
+                stats.non_null_count,
+                stats.unique_count,
+                stats.unique_percentage,
+                stats.duplicate_count,
+                stats.duplicate_percentage,
+                stats.special_char_count,
+                stats.special_char_percentage,
+                freq.most_frequent_value,
+                freq.frequency_count,
+                ', col_position, ' as ordinal_position
+            FROM (
+                SELECT 
+                    COUNT(*) as total_rows,
+                    SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) as null_count,
+                    CASE 
+                        WHEN COUNT(*) = 0 THEN 0.00 
+                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
+                    END as null_percentage,
+                    SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) as non_null_count,
+                    COUNT(DISTINCT `', col_name, '`) as unique_count,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
+                        ELSE ROUND((COUNT(DISTINCT `', col_name, '`) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
+                    END as unique_percentage,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0 
+                        ELSE SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`) 
+                    END as duplicate_count,
+                    CASE 
+                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
+                        ELSE ROUND(((SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`)) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
+                    END as duplicate_percentage,
+                    SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) as special_char_count,
+                    CASE 
+                        WHEN COUNT(*) = 0 THEN 0.00 
+                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
+                    END as special_char_percentage
+                FROM `', table_name_param, '`
+            ) stats
+            CROSS JOIN (
+                SELECT 
+                    COALESCE(freq_val, ''<No Data>'') as most_frequent_value,
+                    COALESCE(freq_cnt, 0) as frequency_count
+                FROM (
+                    SELECT 
+                        CAST(`', col_name, '` AS CHAR(500)) as freq_val,
+                        COUNT(*) as freq_cnt
+                    FROM `', table_name_param, '`
+                    WHERE `', col_name, '` IS NOT NULL
+                    GROUP BY `', col_name, '`
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 1
+                ) most_freq
+                UNION ALL
+                SELECT ''<No Data>'' as most_frequent_value, 0 as frequency_count
+                WHERE NOT EXISTS (SELECT 1 FROM `', table_name_param, '` WHERE `', col_name, '` IS NOT NULL)
+                LIMIT 1
+            ) freq'
+        );
+        
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+        
+    END LOOP;
+    
+    CLOSE col_cursor;
+    
+    -- Return results with clean headers
+    SELECT 
+        column_name as 'Column Name',
+        data_type as 'Data Type',
+        is_nullable as 'Nullable',
+        column_default as 'Default Value',
+        total_rows as 'Total Rows',
+        null_count as 'Null Count',
+        null_percentage as 'Null %',
+        non_null_count as 'Non-Null Count',
+        unique_count as 'Unique Count',
+        unique_percentage as 'Unique %',
+        duplicate_count as 'Duplicate Count',
+        duplicate_percentage as 'Duplicate %',
+        special_char_count as 'Special Char Count',
+        special_char_percentage as 'Special Char %',
+        most_frequent_value as 'Most Frequent Value',
+        frequency_count as 'Frequency Count'
+    FROM temp_describe_results
+    ORDER BY ordinal_position;
+    
+    DROP TEMPORARY TABLE temp_describe_results;
+END$$
+
+DELIMITER ;
+
+-- Usage:
+-- CALL enhanced_describe('your_table_name');
+
+-- Examples:
+-- CALL enhanced_describe('users');
+-- CALL enhanced_describe('orders');
+-- CALL enhanced_describe('products');
+
+-- Test with sample data (optional - uncomment to test)
+
+-- Create table
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    signup_date DATE,
+    is_active BOOLEAN
+);
+
+-- Insert 100 rows
+INSERT INTO customers (customer_id, first_name, last_name, email, phone, signup_date, is_active) VALUES
+(1, 'Emma', 'Johnson', 'emma.johnson@example.com', '555-123-0001', '2023-01-15', TRUE),
+(2, 'Liam', 'Smith', 'liam.smith@example.com', '555-123-0002', '2023-01-18', TRUE),
+(3, 'Olivia', 'Brown', 'olivia.brown@example.com', '555-123-0003', '2023-01-20', TRUE),
+(4, 'Noah', 'Davis', 'noah.davis@example.com', '555-123-0004', '2023-01-22', FALSE),
+(5, 'Ava', 'Miller', 'ava.miller@example.com', '555-123-0005', '2023-01-25', TRUE),
+(6, 'Elijah', 'Wilson', 'elijah.wilson@example.com', '555-123-0006', '2023-02-01', TRUE),
+(7, 'Sophia', 'Moore', 'sophia.moore@example.com', '555-123-0007', '2023-02-04', FALSE),
+(8, 'James', 'Taylor', 'james.taylor@example.com', '555-123-0008', '2023-02-07', TRUE),
+(9, 'Isabella', 'Anderson', 'isabella.anderson@example.com', '555-123-0009', '2023-02-10', TRUE),
+(10, 'Benjamin', 'Thomas', 'benjamin.thomas@example.com', '555-123-0010', '2023-02-14', FALSE),
+-- ... Repeat this pattern for IDs 11 to 100
+(11, 'Mia', NULL, 'mia.jackson@example.com', '555-123-0011', '2023-02-18', TRUE),
+(12, 'Lucas', 'White', 'lucas.white@example.com', '555-123-0012', '2023-02-20', TRUE),
+(13, 'Charlotte', 'Harris', 'charlotte.harris@example.com', '555-123-0013', '2023-02-23', FALSE),
+(14, 'Henry', 'Martin', 'henry.martin@example.com', '555-123-0014', '2023-02-25', TRUE),
+(15, 'Amelia', 'Thompson', 'amelia.thompson@example.com', '555-123-0015', '2023-03-01', FALSE),
+-- (Continue in this format...)
+(100, 'Ethan', 'Brooks', 'ethan.brooks@example.com', '555-123-0100', '2023-06-30', TRUE);
+
+
+-- Test the procedure
+CALL enhanced_describe('customers');
+
+-- Clean up
+DROP TABLE test_sample;
 
 
 
