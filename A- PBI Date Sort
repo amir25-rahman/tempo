@@ -1,3 +1,42 @@
+-- Total row count
+SELECT COUNT(*) AS total_rows FROM your_table;
+
+-- Null count and percentage
+SELECT 
+    COUNT(*) AS total_rows,
+    COUNT(your_column) AS non_nulls,
+    COUNT(*) - COUNT(your_column) AS null_count,
+    ROUND(100.0 * (COUNT(*) - COUNT(your_column)) / COUNT(*), 2) AS null_percent
+FROM your_table;
+
+-- Duplicate percentage
+SELECT 
+    COUNT(*) AS total_rows,
+    COUNT(DISTINCT your_column) AS unique_values,
+    COUNT(*) - COUNT(DISTINCT your_column) AS duplicate_count,
+    ROUND(100.0 * (COUNT(*) - COUNT(DISTINCT your_column)) / COUNT(*), 2) AS duplicate_percent
+FROM your_table
+WHERE your_column IS NOT NULL;
+
+-- Unique percentage
+SELECT 
+    ROUND(100.0 * COUNT(DISTINCT your_column) / COUNT(*), 2) AS unique_percent
+FROM your_table
+WHERE your_column IS NOT NULL;
+
+-- Special character count
+SELECT 
+    COUNT(*) AS total_rows,
+    SUM(CASE 
+            WHEN your_column REGEXP '[^a-zA-Z0-9]' THEN 1 
+            ELSE 0 
+        END) AS special_char_count
+FROM your_table
+WHERE your_column IS NOT NULL;
+
+
+
+
 -- Replace 'your_table' with your actual table name
 
 WITH total_rows AS (
