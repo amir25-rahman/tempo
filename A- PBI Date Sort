@@ -1,4 +1,26 @@
 
+SELECT GROUP_CONCAT(
+    CONCAT(
+        'SELECT ''', COLUMN_NAME, ''' AS column_name, ',
+        'SUM(CASE WHEN `', COLUMN_NAME, '` IS NULL THEN 1 ELSE 0 END) AS null_count ',
+        'FROM your_table'
+    ) SEPARATOR ' UNION ALL '
+)
+INTO @sql
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'your_table' AND TABLE_SCHEMA = 'your_database';
+
+-- Then prepare and execute:
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+
+
+
+
+
 -- Enhanced DESCRIBE for MySQL with Null % and Unique % columns
 -- Replace 'your_table_name' with your actual table name
 
