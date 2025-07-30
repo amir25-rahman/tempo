@@ -45,8 +45,10 @@ TLSMinVersion=TLSv1.2;
 """
         
     def get_connection(self):
-        """Get ODBC connection"""
-        return pyodbc.connect(self.connection_string)
+        """Get ODBC connection with autocommit enabled for Dremio"""
+        conn = pyodbc.connect(self.connection_string)
+        conn.autocommit = True  # Dremio doesn't support transactions
+        return conn
     
     def get_dataset_metadata(self, schema_name: str, table_name: str) -> List[ColumnMetadata]:
         """
@@ -57,7 +59,8 @@ TLSMinVersion=TLSv1.2;
         # First, get a small sample to understand the structure
         sample_query = f"SELECT * FROM {schema_name}.{table_name} LIMIT 1"
         
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        try:
             cursor = conn.cursor()
             cursor.execute(sample_query)
             
@@ -93,6 +96,9 @@ TLSMinVersion=TLSv1.2;
                 ))
             
             cursor.close()
+            
+        finally:
+            conn.close()
             
         logger.info(f"Found {len(columns_metadata)} columns")
         return columns_metadata
@@ -164,7 +170,8 @@ TLSMinVersion=TLSv1.2;
                 """
                 
                 try:
-                    with self.get_connection() as conn:
+                    conn = self.get_connection()
+                    try:
                         cursor = conn.cursor()
                         cursor.execute(batch_query)
                         
@@ -173,6 +180,8 @@ TLSMinVersion=TLSv1.2;
                             most_frequent[col_name] = (value, frequency)
                         
                         cursor.close()
+                    finally:
+                        conn.close()
                         
                 except Exception as e:
                     logger.warning(f"Error getting most frequent values for batch: {e}")
@@ -188,7 +197,8 @@ TLSMinVersion=TLSv1.2;
                                 LIMIT 1
                             """
                             
-                            with self.get_connection() as conn:
+                            conn = self.get_connection()
+                            try:
                                 cursor = conn.cursor()
                                 cursor.execute(individual_query)
                                 result = cursor.fetchone()
@@ -199,6 +209,8 @@ TLSMinVersion=TLSv1.2;
                                     most_frequent[col.name] = (None, 0)
                                 
                                 cursor.close()
+                            finally:
+                                conn.close()
                                 
                         except Exception as e2:
                             logger.warning(f"Error getting most frequent value for {col.name}: {e2}")
@@ -219,11 +231,14 @@ TLSMinVersion=TLSv1.2;
         stats_query = self.build_optimized_stats_query(schema_name, table_name, columns_metadata)
         logger.info("Executing main statistics query")
         
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        try:
             cursor = conn.cursor()
             cursor.execute(stats_query)
             stats_result = cursor.fetchone()
             cursor.close()
+        finally:
+            conn.close()
         
         total_rows = stats_result[0]
         logger.info(f"Total rows: {total_rows}")
@@ -378,7 +393,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
