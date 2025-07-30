@@ -1,3 +1,74 @@
+import pyodbc
+import pandas as pd
+from openpyxl import Workbook
+
+# ---------- Configuration ----------
+# Replace with your actual Dremio connection string
+conn_str = (
+    r'DRIVER={Dremio ODBC Driver 64-bit};'
+    r'ConnectionType=Direct;'
+    r'HOST=your_host;'
+    r'PORT=your_port;'
+    r'Schema=your_schema;'
+    r'SSL=1;'
+    r'SSLSecurity=1;'
+    r'TRUSTEDCERTS=system;'
+    r'TLSProtocol=TLSv1.2;'
+    r'AuthenticationType=Plain;'
+    r'UID=your_username;'
+    r'PWD=your_password;'
+)
+
+queries = {
+    'Query1': 'SELECT * FROM your_table1',
+    'Query2': 'SELECT * FROM your_table2',
+    # Add more queries as needed
+}
+
+output_file = 'Dremio_Report.xlsx'
+
+# ---------- Functions ----------
+def analyze_dataframe(df):
+    analysis = []
+    total_rows = len(df)
+
+    for col in df.columns:
+        null_count = df[col].isnull().sum()
+        unique_count = df[col].nunique(dropna=False)
+        duplicate_count = total_rows - df[col].drop_duplicates().shape[0]
+
+        null_pct = (null_count / total_rows) * 100 if total_rows else 0
+        unique_pct = (unique_count / total_rows) * 100 if total_rows else 0
+        duplicate_pct = (duplicate_count / total_rows) * 100 if total_rows else 0
+
+        analysis.append({
+            'Column': col,
+            'Null %': round(null_pct, 2),
+            'Unique %': round(unique_pct, 2),
+            'Duplicate %': round(duplicate_pct, 2)
+        })
+
+    return pd.DataFrame(analysis)
+
+# ---------- Main Logic ----------
+with pyodbc.connect(conn_str, autocommit=True) as conn:
+    writer = pd.ExcelWriter(output_file, engine='openpyxl')
+
+    for name, query in queries.items():
+        print(f"Running: {name}")
+        df = pd.read_sql(query, conn)
+        analysis_df = analyze_dataframe(df)
+        analysis_df.to_excel(writer, sheet_name=name, index=False)
+
+    writer.save()
+
+print(f"Report saved to {output_file}")
+
+
+
+
+
+
 import pandas as pd
 
 # Step 1: Load Excel file with 'schema' and 'table' columns
