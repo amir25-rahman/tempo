@@ -1,3 +1,27 @@
+import pandas as pd
+
+# Step 1: Read the Excel file
+df = pd.read_excel("input.xlsx")
+
+# Step 2: Define the template string
+template = "SELECT * FROM schema_name.table_name WHERE ROWNUM < 10;"
+
+# Step 3: Replace placeholders with actual values
+def generate_query(row):
+    return template.replace("schema_name", row['schema']).replace("table_name", row['table'])
+
+df['query'] = df.apply(generate_query, axis=1)
+
+# Step 4: Export to a new Excel file
+df[['query']].to_excel("output.xlsx", index=False)
+
+
+
+
+
+
+
+
 import pyodbc
 
 # Replace these values with your actual Dremio credentials and setup
