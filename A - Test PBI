@@ -19,6 +19,406 @@ class ColumnMetadata:
     escaped_name: str
 
 class DremioODBCStatsGenerator:
+    def __init__(self, host: str, port: str, uid: str, pwd: str, driver: str = 'Dremio Connector'):
+        """
+        Initialize ODBC connection to Dremio
+        
+        Args:
+            host: Dremio server hostname
+            port: Dremio port (typically 31010)
+            uid: Username
+            pwd: Password
+            driver: ODBC driver name (default: 'Dremio Connector')
+        """
+        self.connection_string = f"""
+DRIVER={{{driver}}};
+ConnectionType=Direct;
+HOST={host};
+PORT={port};
+AuthenticationType=Plain;
+UID={uid};
+PWD={pwd};
+SSL=1;
+SSLVerifyServer=1;
+UseSystemTrustStore=1;
+TLSMinVersion=TLSv1.2;
+"""
+        
+    def get_connection(self):
+        """Get ODBC connection"""
+        return pyodbc.connect(self.connection_string)
+    
+    def get_dataset_metadata(self, schema_name: str, table_name: str) -> List[ColumnMetadata]:
+        """
+        Get column metadata using a LIMIT query to understand the dataset structure
+        """
+        logger.info(f"Getting metadata for {schema_name}.{table_name}")
+        
+        # First, get a small sample to understand the structure
+        sample_query = f"SELECT * FROM {schema_name}.{table_name} LIMIT 1"
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sample_query)
+            
+            # Get column information from cursor description
+            columns_metadata = []
+            for col_desc in cursor.description:
+                col_name = col_desc[0]
+                col_type = col_desc[1]  # This is the Python type
+                
+                # Map Python types to SQL types (approximate)
+                type_mapping = {
+                    str: 'VARCHAR',
+                    int: 'INTEGER',
+                    float: 'DOUBLE',
+                    bool: 'BOOLEAN',
+                    bytes: 'VARBINARY'
+                }
+                
+                sql_type = type_mapping.get(col_type, 'VARCHAR')
+                
+                # Determine if it's a string type
+                is_string = col_type == str or 'CHAR' in str(sql_type).upper() or 'TEXT' in str(sql_type).upper()
+                
+                # Create escaped column name for special characters
+                escaped_name = f'"{col_name}"' if any(c in col_name for c in [' ', '-', '.', '(', ')', '[', ']']) else col_name
+                
+                columns_metadata.append(ColumnMetadata(
+                    name=col_name,
+                    data_type=sql_type,
+                    is_nullable=True,  # We'll assume nullable for now
+                    is_string_type=is_string,
+                    escaped_name=escaped_name
+                ))
+            
+            cursor.close()
+            
+        logger.info(f"Found {len(columns_metadata)} columns")
+        return columns_metadata
+    
+    def build_optimized_stats_query(self, schema_name: str, table_name: str, 
+                                  columns_metadata: List[ColumnMetadata]) -> str:
+        """
+        Build a single optimized query to get all basic statistics at once
+        """
+        logger.info("Building optimized statistics query")
+        
+        select_parts = ["COUNT(*) as total_rows"]
+        
+        for col in columns_metadata:
+            col_stats = [
+                f"COUNT({col.escaped_name}) as {col.name}_non_null_count",
+                f"COUNT(*) - COUNT({col.escaped_name}) as {col.name}_null_count", 
+                f"COUNT(DISTINCT {col.escaped_name}) as {col.name}_unique_count"
+            ]
+            
+            # Add special character count for string columns
+            if col.is_string_type:
+                col_stats.append(
+                    f"SUM(CASE WHEN {col.escaped_name} IS NOT NULL AND REGEXP_LIKE({col.escaped_name}, '[^a-zA-Z0-9\\\\s]') THEN 1 ELSE 0 END) as {col.name}_special_char_count"
+                )
+            
+            select_parts.extend(col_stats)
+        
+        query = f"SELECT {', '.join(select_parts)} FROM {schema_name}.{table_name}"
+        return query
+    
+    def get_most_frequent_values(self, schema_name: str, table_name: str, 
+                               columns_metadata: List[ColumnMetadata]) -> Dict[str, Tuple[Any, int]]:
+        """
+        Get most frequent values for all columns using efficient queries
+        """
+        logger.info("Getting most frequent values")
+        
+        most_frequent = {}
+        
+        # Process columns in smaller batches to avoid query complexity issues
+        batch_size = 5
+        for i in range(0, len(columns_metadata), batch_size):
+            batch_columns = columns_metadata[i:i + batch_size]
+            
+            # Build union query for this batch
+            union_parts = []
+            for col in batch_columns:
+                union_parts.append(f"""
+                    SELECT '{col.name}' as column_name, 
+                           CAST({col.escaped_name} AS VARCHAR) as value, 
+                           COUNT(*) as frequency
+                    FROM {schema_name}.{table_name}
+                    WHERE {col.escaped_name} IS NOT NULL
+                    GROUP BY {col.escaped_name}
+                """)
+            
+            if union_parts:
+                # Get top value per column using window functions
+                batch_query = f"""
+                WITH ranked_values AS (
+                    SELECT column_name, value, frequency,
+                           ROW_NUMBER() OVER (PARTITION BY column_name ORDER BY frequency DESC) as rn
+                    FROM ({' UNION ALL '.join(union_parts)}) combined
+                )
+                SELECT column_name, value, frequency
+                FROM ranked_values 
+                WHERE rn = 1
+                """
+                
+                try:
+                    with self.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(batch_query)
+                        
+                        for row in cursor.fetchall():
+                            col_name, value, frequency = row
+                            most_frequent[col_name] = (value, frequency)
+                        
+                        cursor.close()
+                        
+                except Exception as e:
+                    logger.warning(f"Error getting most frequent values for batch: {e}")
+                    # Fallback to individual queries
+                    for col in batch_columns:
+                        try:
+                            individual_query = f"""
+                                SELECT {col.escaped_name} as value, COUNT(*) as frequency
+                                FROM {schema_name}.{table_name}
+                                WHERE {col.escaped_name} IS NOT NULL
+                                GROUP BY {col.escaped_name}
+                                ORDER BY frequency DESC
+                                LIMIT 1
+                            """
+                            
+                            with self.get_connection() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(individual_query)
+                                result = cursor.fetchone()
+                                
+                                if result:
+                                    most_frequent[col.name] = (result[0], result[1])
+                                else:
+                                    most_frequent[col.name] = (None, 0)
+                                
+                                cursor.close()
+                                
+                        except Exception as e2:
+                            logger.warning(f"Error getting most frequent value for {col.name}: {e2}")
+                            most_frequent[col.name] = (None, 0)
+        
+        return most_frequent
+    
+    def generate_dataset_stats(self, schema_name: str, table_name: str) -> pd.DataFrame:
+        """
+        Generate comprehensive statistics for a dataset
+        """
+        logger.info(f"Generating comprehensive stats for {schema_name}.{table_name}")
+        
+        # Step 1: Get metadata
+        columns_metadata = self.get_dataset_metadata(schema_name, table_name)
+        
+        # Step 2: Execute optimized stats query
+        stats_query = self.build_optimized_stats_query(schema_name, table_name, columns_metadata)
+        logger.info("Executing main statistics query")
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(stats_query)
+            stats_result = cursor.fetchone()
+            cursor.close()
+        
+        total_rows = stats_result[0]
+        logger.info(f"Total rows: {total_rows}")
+        
+        # Step 3: Get most frequent values
+        most_frequent_values = self.get_most_frequent_values(schema_name, table_name, columns_metadata)
+        
+        # Step 4: Build results DataFrame
+        results = []
+        stats_idx = 1  # Start after total_rows
+        
+        for col in columns_metadata:
+            # Extract stats from the main query result
+            non_null_count = stats_result[stats_idx]
+            null_count = stats_result[stats_idx + 1]
+            unique_count = stats_result[stats_idx + 2]
+            
+            if col.is_string_type:
+                special_char_count = stats_result[stats_idx + 3]
+                stats_idx += 4
+            else:
+                special_char_count = 0
+                stats_idx += 3
+            
+            # Calculate percentages
+            null_percent = (null_count / total_rows * 100) if total_rows > 0 else 0
+            unique_percent = (unique_count / non_null_count * 100) if non_null_count > 0 else 0
+            duplicate_count = max(0, non_null_count - unique_count)
+            duplicate_percent = (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0
+            special_char_percent = (special_char_count / total_rows * 100) if total_rows > 0 else 0
+            
+            # Get most frequent value
+            most_freq_val, freq_count = most_frequent_values.get(col.name, (None, 0))
+            
+            # Build result row
+            row_data = {
+                'Column': col.name,
+                'Data Type': col.data_type,
+                'Nullable': 'YES' if col.is_nullable else 'NO',
+                'Default Value': 'NULL',
+                'Total Rows': total_rows,
+                'Null Count': null_count,
+                'Null %': round(null_percent, 2),
+                'Non-Null Count': non_null_count,
+                'Unique Count': unique_count,
+                'Unique %': round(unique_percent, 2),
+                'Duplicate Count': duplicate_count,
+                'Duplicate %': round(duplicate_percent, 2),
+                'Special Char Count': special_char_count,
+                'Special Char %': round(special_char_percent, 2),
+                'Most Frequent Value': str(most_freq_val) if most_freq_val is not None else 'NULL',
+                'Frequency Count': freq_count
+            }
+            
+            results.append(row_data)
+            logger.info(f"Processed column: {col.name}")
+        
+        return pd.DataFrame(results)
+    
+    def generate_multiple_datasets_stats(self, datasets: List[Tuple[str, str]], 
+                                       output_file: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+        """
+        Generate stats for multiple datasets efficiently
+        """
+        all_stats = {}
+        
+        for schema_name, table_name in datasets:
+            dataset_key = f"{schema_name}.{table_name}"
+            logger.info(f"Processing dataset: {dataset_key}")
+            
+            try:
+                stats_df = self.generate_dataset_stats(schema_name, table_name)
+                all_stats[dataset_key] = stats_df
+                logger.info(f"Successfully processed {dataset_key} - {len(stats_df)} columns")
+                
+            except Exception as e:
+                logger.error(f"Error processing {dataset_key}: {e}")
+                continue
+        
+        # Save to Excel if specified
+        if output_file and all_stats:
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                for dataset_name, df in all_stats.items():
+                    # Sanitize sheet name for Excel
+                    sheet_name = re.sub(r'[^\w\s-]', '_', dataset_name)[:31]
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            logger.info(f"Results saved to {output_file}")
+        
+        return all_stats
+
+def main():
+    """Example usage"""
+    # Dremio connection parameters - update with your actual details
+    host = 'your.dremio.server.com'
+    port = '31010'
+    uid = 'your_username'  # Add this variable
+    pwd = 'your_password'
+    driver = 'Dremio Connector'
+    
+    # Initialize the stats generator
+    stats_generator = DremioODBCStatsGenerator(host, port, uid, pwd, driver)
+    
+    # Example 1: Single dataset analysis
+    try:
+        logger.info("Starting single dataset analysis")
+        single_stats = stats_generator.generate_dataset_stats("your_schema", "your_table")
+        
+        print("\nDataset Statistics Summary:")
+        print(f"Total columns analyzed: {len(single_stats)}")
+        print(f"Total rows in dataset: {single_stats['Total Rows'].iloc[0] if not single_stats.empty else 0}")
+        
+        # Save results
+        single_stats.to_csv("dataset_statistics.csv", index=False)
+        logger.info("Single dataset results saved to dataset_statistics.csv")
+        
+        # Display sample results
+        print("\nFirst 5 columns statistics:")
+        print(single_stats.head().to_string(index=False))
+        
+    except Exception as e:
+        logger.error(f"Error with single dataset analysis: {e}")
+    
+    # Example 2: Multiple datasets analysis
+    datasets_to_analyze = [
+        ("schema1", "customers"),
+        ("schema1", "orders"), 
+        ("schema2", "products"),
+        ("schema2", "inventory")
+    ]
+    
+    try:
+        logger.info("Starting multiple datasets analysis")
+        multiple_stats = stats_generator.generate_multiple_datasets_stats(
+            datasets_to_analyze,
+            output_file="all_datasets_statistics.xlsx"
+        )
+        
+        # Print summary for each dataset
+        print("\nMultiple Datasets Summary:")
+        for dataset_name, df in multiple_stats.items():
+            total_rows = df['Total Rows'].iloc[0] if not df.empty else 0
+            null_columns = len(df[df['Null %'] > 50])  # Columns with >50% nulls
+            
+            print(f"\nDataset: {dataset_name}")
+            print(f"  - Columns: {len(df)}")
+            print(f"  - Rows: {total_rows:,}")
+            print(f"  - High null columns (>50%): {null_columns}")
+            
+    except Exception as e:
+        logger.error(f"Error with multiple datasets analysis: {e}")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import pyodbc
+from typing import List, Dict, Any, Optional, Tuple
+import logging
+import re
+from dataclasses import dataclass
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ColumnMetadata:
+    name: str
+    data_type: str
+    is_nullable: bool
+    is_string_type: bool
+    escaped_name: str
+
+class DremioODBCStatsGenerator:
     def __init__(self, connection_string: str):
         """
         Initialize ODBC connection to Dremio
