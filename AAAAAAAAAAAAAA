@@ -1,3 +1,114 @@
+
+os.makedirs(output_dir, exist_ok=True)
+
+# Connect to Dremio
+conn = pyodbc.connect(conn_str, autocommit=True)
+
+# Loop through all tables
+for _, row in table_list_df.iterrows():
+    schema = row['schema']
+    table = row['table']
+    full_path = f"hive.{schema}.{table}"
+    print(f"\n🔍 Profiling {full_path}...")
+
+    # Safe WHERE clause
+    where_clause = f"WHERE as_of_date = DATE '{as_of_date}'" if use_as_of_date else ""
+
+    try:
+        # Get column names
+        meta_query = f"SELECT * FROM {full_path} {where_clause} LIMIT 0"
+        df_empty = pd.read_sql(meta_query, conn)
+        columns = df_empty.columns.tolist()
+
+        # Get total rows
+        row_count_query = f"SELECT COUNT(*) AS total_rows FROM {full_path} {where_clause}"
+        total_rows_result = pd.read_sql(row_count_query, conn)
+        total_rows = total_rows_result.iloc[0]['total_rows']
+
+        print(f"👉 Total rows: {total_rows}")
+
+        # Stats per column
+        stats = []
+        for col in tqdm(columns, desc=f"{schema}.{table}"):
+            try:
+                stat_query = (
+                    f"SELECT "
+                    f"  COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count, "
+                    f"  COUNT(DISTINCT {col}) AS unique_count "
+                    f"FROM {full_path} {where_clause}"
+                )
+                result = pd.read_sql(stat_query, conn).iloc[0]
+
+                null_count = result.get('null_count') or 0
+                unique_count = result.get('unique_count') or 0
+
+                if total_rows == 0:
+                    null_pct = unique_pct = duplicate_pct = 0
+                else:
+                    null_pct = (null_count / total_rows) * 100
+                    unique_pct = (unique_count / total_rows) * 100
+                    non_null = total_rows - null_count
+                    duplicate_pct = ((non_null - unique_count) / total_rows) * 100
+
+                stats.append({
+                    'Column': col,
+                    'Null %': round(null_pct, 2),
+                    'Unique %': round(unique_pct, 2),
+                    'Duplicate %': round(duplicate_pct, 2),
+                    'Total Rows': total_rows
+                })
+
+            except Exception as col_err:
+                stats.append({
+                    'Column': col,
+                    'Null %': 'Error',
+                    'Unique %': 'Error',
+                    'Duplicate %': 'Error',
+                    'Total Rows': total_rows,
+                    'Error': str(col_err)
+                })
+
+        # Save to Excel
+        df_stats = pd.DataFrame(stats)
+        output_path = os.path.join(output_dir, f"{schema}_{table}_profile.xlsx")
+        df_stats.to_excel(output_path, index=False)
+        print(f"✅ Saved: {output_path}")
+
+    except Exception as e:
+        print(f"❌ Failed for {full_path}: {e}")
+
+# Close connection
+conn.close()
+print("\n🎉 All done.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import pyodbc
 import pandas as pd
 from tqdm import tqdm
