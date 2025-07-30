@@ -1,0 +1,193 @@
+import pyodbc
+import pandas as pd
+from tqdm import tqdm
+import os
+
+# Read credentials
+uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
+pwd = 'your_password'
+
+# Read Excel with schema and table list
+table_list_df = pd.read_excel(r'C:\Users\YourUsername\gg\schema_table_list.xlsx')  # <-- UPDATE THIS PATH
+as_of_date = '2025-07-30'
+
+# Dremio connection
+conn_str = f"""
+DRIVER={{Dremio Connector}};
+ConnectionType=Direct;
+HOST=your.dremio.server.com;
+PORT=31010;
+AuthenticationType=Plain;
+UID={uid};
+PWD={pwd};
+SSL=1;
+SSLVerifyServer=1;
+UseSystemTrustStore=1;
+TLSMinVersion=TLSv1.2;
+"""
+
+conn = pyodbc.connect(conn_str, autocommit=True)
+
+# Output folder
+output_dir = r"C:\Users\YourUsername\gg\outputs"
+os.makedirs(output_dir, exist_ok=True)
+
+# Loop through each schema/table
+for _, row in table_list_df.iterrows():
+    schema = row['schema']
+    table = row['table']
+    full_path = f"hive.{schema}.{table}"
+    print(f"🔍 Profiling {full_path}...")
+
+    try:
+        # Get column names
+        meta_query = f"""
+        SELECT * FROM {full_path}
+        WHERE as_of_date = DATE '{as_of_date}'
+        LIMIT 0
+        """
+        df_empty = pd.read_sql(meta_query, conn)
+        columns = df_empty.columns.tolist()
+
+        # Get total rows
+        row_count_query = f"""
+        SELECT COUNT(*) AS total_rows
+        FROM {full_path}
+        WHERE as_of_date = DATE '{as_of_date}'
+        """
+        total_rows = pd.read_sql(row_count_query, conn).iloc[0]['total_rows']
+
+        # Stats
+        stats = []
+        for col in tqdm(columns, desc=f"{schema}.{table}"):
+            stat_query = f"""
+            SELECT
+                COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count,
+                COUNT(DISTINCT {col}) AS unique_count
+            FROM {full_path}
+            WHERE as_of_date = DATE '{as_of_date}'
+            """
+            try:
+                result = pd.read_sql(stat_query, conn).iloc[0]
+                null_count = result['null_count']
+                unique_count = result['unique_count']
+                non_null = total_rows - null_count
+                duplicate_pct = ((non_null - unique_count) / total_rows) * 100 if total_rows else 0
+
+                stats.append({
+                    'Column': col,
+                    'Null %': round((null_count / total_rows) * 100, 2),
+                    'Unique %': round((unique_count / total_rows) * 100, 2),
+                    'Duplicate %': round(duplicate_pct, 2),
+                    'Total Rows': total_rows
+                })
+            except Exception as col_err:
+                stats.append({
+                    'Column': col,
+                    'Null %': 'Error',
+                    'Unique %': 'Error',
+                    'Duplicate %': 'Error',
+                    'Error': str(col_err)
+                })
+
+        # Save result
+        df_stats = pd.DataFrame(stats)
+        output_path = os.path.join(output_dir, f"{schema}_{table}_profile.xlsx")
+        df_stats.to_excel(output_path, index=False)
+        print(f"✅ Saved: {output_path}")
+
+    except Exception as e:
+        print(f"❌ Failed for {full_path}: {e}")
+
+conn.close()
+print("\n🎉 All done.")
+
+
+
+
+
+
+
+
+################################
+################################
+
+
+import pyodbc
+import pandas as pd
+from tqdm import tqdm
+
+uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
+pwd = 'your_password'
+
+schema = 'hive.dsfsdf'
+table = 'sfdsdffsdf'
+as_of_date = '2025-07-30'  # Optional
+
+conn_str = f"""
+DRIVER={{Dremio Connector}};
+ConnectionType=Direct;
+HOST=your.dremio.server.com;
+PORT=31010;
+AuthenticationType=Plain;
+UID={uid};
+PWD={pwd};
+SSL=1;
+SSLVerifyServer=1;
+UseSystemTrustStore=1;
+TLSMinVersion=TLSv1.2;
+"""
+
+conn = pyodbc.connect(conn_str, autocommit=True)
+
+# Get column list dynamically (zero-row fetch)
+meta_query = f"""
+SELECT *
+FROM {schema}.{table}
+WHERE as_of_date = DATE '{as_of_date}'
+LIMIT 0
+"""
+
+df_empty = pd.read_sql(meta_query, conn)
+columns = df_empty.columns.tolist()
+
+# Total rows
+row_count_query = f"""
+SELECT COUNT(*) AS total_rows
+FROM {schema}.{table}
+WHERE as_of_date = DATE '{as_of_date}'
+"""
+total_rows = pd.read_sql(row_count_query, conn).iloc[0]['total_rows']
+
+# Stats per column
+stats = []
+
+for col in tqdm(columns, desc="Analyzing columns"):
+    query = f"""
+    SELECT
+        COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count,
+        COUNT(DISTINCT {col}) AS unique_count
+    FROM {schema}.{table}
+    WHERE as_of_date = DATE '{as_of_date}'
+    """
+    try:
+        result = pd.read_sql(query, conn).iloc[0]
+        null_count = result['null_count']
+        unique_count = result['unique_count']
+        non_null = total_rows - null_count
+        duplicate_pct = ((non_null - unique_count) / total_rows) * 100 if total_rows else 0
+
+        stats.append({
+            'Column': col,
+            'Null %': round((null_count / total_rows) * 100, 2),
+            'Unique %': round((unique_count / total_rows) * 100, 2),
+            'Duplicate %': round(duplicate_pct, 2)
+        })
+    except Exception as e:
+        stats.append({'Column': col, 'Null %': 'Error', 'Unique %': 'Error', 'Duplicate %': 'Error', 'Error': str(e)})
+
+df_stats = pd.DataFrame(stats)
+df_stats.to_excel(r'C:\Users\YourUsername\gg\profile_output.xlsx', index=False)
+print("✅ Done. Excel written.")
+
+conn.close()
