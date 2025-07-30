@@ -1,6 +1,72 @@
 import pyodbc
 import pandas as pd
 from openpyxl import Workbook
+import os
+
+# -------- Configuration --------
+conn_str = (
+    r'DRIVER={Dremio ODBC Driver 64-bit};'
+    r'ConnectionType=Direct;'
+    r'HOST=your_host;'
+    r'PORT=your_port;'
+    r'Schema=your_schema;'
+    r'SSL=1;'
+    r'SSLSecurity=1;'
+    r'TRUSTEDCERTS=system;'
+    r'TLSProtocol=TLSv1.2;'
+    r'AuthenticationType=Plain;'
+    r'UID=your_username;'
+    r'PWD=your_password;'
+)
+
+queries = {
+    'Table1': 'SELECT * FROM your_table1',
+    'Table2': 'SELECT * FROM your_table2',
+    # Add more as needed
+}
+
+output_file = 'Fast_Dremio_Report.xlsx'
+CHUNK_SIZE = 100000  # Adjust as needed
+
+# -------- Analysis Function --------
+def quick_column_stats(df):
+    total_rows = len(df)
+
+    results = []
+    for col in df.columns:
+        col_data = df[col]
+        nulls = col_data.isna().sum()
+        uniques = col_data.nunique(dropna=False)
+        duplicates = total_rows - col_data.drop_duplicates().shape[0]
+
+        results.append({
+            'Column': col,
+            'Null %': round(100 * nulls / total_rows, 2),
+            'Unique %': round(100 * uniques / total_rows, 2),
+            'Duplicate %': round(100 * duplicates / total_rows, 2)
+        })
+    return pd.DataFrame(results)
+
+# -------- Main Logic --------
+with pyodbc.connect(conn_str, autocommit=True) as conn:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for label, query in queries.items():
+            print(f"Processing: {label}")
+            chunks = pd.read_sql(query, conn, chunksize=CHUNK_SIZE)
+            df_full = pd.concat(chunks, ignore_index=True)
+            stats_df = quick_column_stats(df_full)
+            stats_df.to_excel(writer, sheet_name=label[:31], index=False)  # Excel sheet name max = 31 chars
+
+print(f"✅ Report saved: {output_file}")
+
+
+
+
+
+
+import pyodbc
+import pandas as pd
+from openpyxl import Workbook
 
 # ---------- Configuration ----------
 # Replace with your actual Dremio connection string
