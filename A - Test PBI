@@ -1,3 +1,51 @@
+import pyodbc
+
+# Replace these values with your actual Dremio credentials and setup
+host = 'localhost'  # or the IP/domain of your Dremio instance
+port = '31010'      # Dremio ODBC default port
+uid = 'your_username'
+pwd = 'your_password'
+driver = 'Dremio Connector'  # Check actual name in ODBC Data Source Administrator
+
+# ODBC connection string
+conn_str = f"""
+DRIVER={{{driver}}};
+ConnectionType=Direct;
+HOST={host};
+PORT={port};
+AuthenticationType=Plain;
+UID={uid};
+PWD={pwd};
+"""
+
+try:
+    # Connect to Dremio
+    conn = pyodbc.connect(conn_str, autocommit=True)
+    cursor = conn.cursor()
+
+    # Example query
+    query = "SELECT * FROM sys.options LIMIT 5"
+    cursor.execute(query)
+
+    # Fetch and print results
+    rows = cursor.fetchall()
+    for row in rows:
+        print(row)
+
+except Exception as e:
+    print("Error connecting to Dremio:", e)
+
+finally:
+    if 'cursor' in locals():
+        cursor.close()
+    if 'conn' in locals():
+        conn.close()
+
+
+import pyodbc
+print(pyodbc.drivers())
+
+
 
 -- Enhanced DESCRIBE function for MySQL - Tested Version
 -- Creates comprehensive column statistics including null%, unique%, duplicate%
