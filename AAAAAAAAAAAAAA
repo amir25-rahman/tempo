@@ -7,6 +7,137 @@ import os
 uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
 pwd = 'your_password'
 
+# Read Excel with schema/table list (must have columns: schema, table)
+input_path = r'C:\Users\YourUsername\gg\schema_table_list.xlsx'
+table_list_df = pd.read_excel(input_path)
+
+# Optional: Date filter if your table has an 'as_of_date' column
+use_as_of_date = True
+as_of_date = '2025-07-30'
+
+# Dremio connection string
+conn_str = (
+    "DRIVER={Dremio Connector};"
+    "ConnectionType=Direct;"
+    "HOST=your.dremio.server.com;"
+    "PORT=31010;"
+    "AuthenticationType=Plain;"
+    f"UID={uid};"
+    f"PWD={pwd};"
+    "SSL=1;"
+    "SSLVerifyServer=1;"
+    "UseSystemTrustStore=1;"
+    "TLSMinVersion=TLSv1.2;"
+)
+
+# Output directory
+output_dir = r"C:\Users\YourUsername\gg\outputs"
+os.makedirs(output_dir, exist_ok=True)
+
+# Connect
+conn = pyodbc.connect(conn_str, autocommit=True)
+
+# Loop through schema/table combinations
+for _, row in table_list_df.iterrows():
+    schema = row['schema']
+    table = row['table']
+    full_path = f"hive.{schema}.{table}"
+
+    print(f"\n🔍 Profiling {full_path}...")
+
+    try:
+        # Step 1: Get column names (LIMIT 0)
+        meta_query = (
+            f"SELECT * FROM {full_path} "
+            f"{'WHERE as_of_date = DATE \'' + as_of_date + '\' ' if use_as_of_date else ''}"
+            "LIMIT 0"
+        )
+        df_empty = pd.read_sql(meta_query, conn)
+        columns = df_empty.columns.tolist()
+
+        # Step 2: Get total row count
+        row_count_query = (
+            f"SELECT COUNT(*) AS total_rows FROM {full_path} "
+            f"{'WHERE as_of_date = DATE \'' + as_of_date + '\'' if use_as_of_date else ''}"
+        )
+        total_rows = pd.read_sql(row_count_query, conn).iloc[0]['total_rows']
+
+        # Step 3: Collect stats for each column
+        stats = []
+        for col in tqdm(columns, desc=f"{schema}.{table}"):
+            try:
+                stat_query = (
+                    f"SELECT "
+                    f"  COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count, "
+                    f"  COUNT(DISTINCT {col}) AS unique_count "
+                    f"FROM {full_path} "
+                    f"{'WHERE as_of_date = DATE \'' + as_of_date + '\'' if use_as_of_date else ''}"
+                )
+                result = pd.read_sql(stat_query, conn).iloc[0]
+                null_count = result['null_count']
+                unique_count = result['unique_count']
+                non_null = total_rows - null_count
+                duplicate_pct = ((non_null - unique_count) / total_rows) * 100 if total_rows else 0
+
+                stats.append({
+                    'Column': col,
+                    'Null %': round((null_count / total_rows) * 100, 2),
+                    'Unique %': round((unique_count / total_rows) * 100, 2),
+                    'Duplicate %': round(duplicate_pct, 2),
+                    'Total Rows': total_rows
+                })
+            except Exception as col_err:
+                stats.append({
+                    'Column': col,
+                    'Null %': 'Error',
+                    'Unique %': 'Error',
+                    'Duplicate %': 'Error',
+                    'Total Rows': total_rows,
+                    'Error': str(col_err)
+                })
+
+        # Step 4: Save to Excel
+        df_stats = pd.DataFrame(stats)
+        output_path = os.path.join(output_dir, f"{schema}_{table}_profile.xlsx")
+        df_stats.to_excel(output_path, index=False)
+        print(f"✅ Saved: {output_path}")
+
+    except Exception as e:
+        print(f"❌ Failed for {full_path}: {e}")
+
+conn.close()
+print("\n🎉 All done.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pyodbc
+import pandas as pd
+from tqdm import tqdm
+import os
+
+# Read credentials
+uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
+pwd = 'your_password'
+
 # Read Excel with schema and table list
 table_list_df = pd.read_excel(r'C:\Users\YourUsername\gg\schema_table_list.xlsx')  # <-- UPDATE THIS PATH
 as_of_date = '2025-07-30'
