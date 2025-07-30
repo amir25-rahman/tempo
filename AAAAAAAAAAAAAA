@@ -5,13 +5,13 @@ import os
 
 # Read credentials
 uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
-pwd = 'your_password'
+pwd = 'your_password'  # Replace with your actual password
 
 # Read Excel with schema/table list (must have columns: schema, table)
 input_path = r'C:\Users\YourUsername\gg\schema_table_list.xlsx'
 table_list_df = pd.read_excel(input_path)
 
-# Optional: Date filter if your table has an 'as_of_date' column
+# Optional: Only used if your table has an 'as_of_date' column
 use_as_of_date = True
 as_of_date = '2025-07-30'
 
@@ -34,7 +34,7 @@ conn_str = (
 output_dir = r"C:\Users\YourUsername\gg\outputs"
 os.makedirs(output_dir, exist_ok=True)
 
-# Connect
+# Connect to Dremio
 conn = pyodbc.connect(conn_str, autocommit=True)
 
 # Loop through schema/table combinations
@@ -42,27 +42,22 @@ for _, row in table_list_df.iterrows():
     schema = row['schema']
     table = row['table']
     full_path = f"hive.{schema}.{table}"
-
     print(f"\n🔍 Profiling {full_path}...")
 
+    # Build WHERE clause safely
+    where_clause = f"WHERE as_of_date = DATE '{as_of_date}'" if use_as_of_date else ""
+
     try:
-        # Step 1: Get column names (LIMIT 0)
-        meta_query = (
-            f"SELECT * FROM {full_path} "
-            f"{'WHERE as_of_date = DATE \'' + as_of_date + '\' ' if use_as_of_date else ''}"
-            "LIMIT 0"
-        )
+        # Step 1: Get column names
+        meta_query = f"SELECT * FROM {full_path} {where_clause} LIMIT 0"
         df_empty = pd.read_sql(meta_query, conn)
         columns = df_empty.columns.tolist()
 
         # Step 2: Get total row count
-        row_count_query = (
-            f"SELECT COUNT(*) AS total_rows FROM {full_path} "
-            f"{'WHERE as_of_date = DATE \'' + as_of_date + '\'' if use_as_of_date else ''}"
-        )
+        row_count_query = f"SELECT COUNT(*) AS total_rows FROM {full_path} {where_clause}"
         total_rows = pd.read_sql(row_count_query, conn).iloc[0]['total_rows']
 
-        # Step 3: Collect stats for each column
+        # Step 3: Collect stats per column
         stats = []
         for col in tqdm(columns, desc=f"{schema}.{table}"):
             try:
@@ -70,8 +65,7 @@ for _, row in table_list_df.iterrows():
                     f"SELECT "
                     f"  COUNT(*) FILTER (WHERE {col} IS NULL) AS null_count, "
                     f"  COUNT(DISTINCT {col}) AS unique_count "
-                    f"FROM {full_path} "
-                    f"{'WHERE as_of_date = DATE \'' + as_of_date + '\'' if use_as_of_date else ''}"
+                    f"FROM {full_path} {where_clause}"
                 )
                 result = pd.read_sql(stat_query, conn).iloc[0]
                 null_count = result['null_count']
@@ -105,6 +99,7 @@ for _, row in table_list_df.iterrows():
     except Exception as e:
         print(f"❌ Failed for {full_path}: {e}")
 
+# Close connection
 conn.close()
 print("\n🎉 All done.")
 
