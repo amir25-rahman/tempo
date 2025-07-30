@@ -1,3 +1,44 @@
+
+let
+    Source = MyData,  // Replace with your actual table name
+    ColumnNames = Table.ColumnNames(Source),
+    RowCount = Table.RowCount(Source),
+
+    StatsTable = Table.FromList(
+        ColumnNames,
+        Splitter.SplitByNothing(),
+        {"ColumnName"}
+    ),
+    
+    AddStats = Table.AddColumn(StatsTable, "Stats", each 
+        let
+            col = [ColumnName],
+            values = Table.Column(Source, col),
+            nullCount = List.Count(List.Select(values, each _ = null)),
+            uniqueCount = List.Count(List.Distinct(values)),
+            dupCount = RowCount - uniqueCount,
+            nullPct = if RowCount = 0 then 0 else nullCount / RowCount,
+            uniquePct = if RowCount = 0 then 0 else uniqueCount / RowCount,
+            dupPct = if RowCount = 0 then 0 else dupCount / RowCount
+        in
+            [
+                NullPct = Number.Round(nullPct * 100, 2),
+                UniquePct = Number.Round(uniquePct * 100, 2),
+                DuplicatePct = Number.Round(dupPct * 100, 2)
+            ]
+    ),
+
+    Expanded = Table.ExpandRecordColumn(AddStats, "Stats", {"NullPct", "UniquePct", "DuplicatePct"})
+in
+    Expanded
+
+
+
+
+
+
+
+
 import pyodbc
 import pandas as pd
 from openpyxl import Workbook
