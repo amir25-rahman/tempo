@@ -1,41 +1,27 @@
 import pandas as pd
-import re
 
-# === 1. Load your Excel file ===
-df = pd.read_excel("your_file.xlsx")  # Replace with your filename
+# Step 1: Load Excel
+df = pd.read_excel("your_file.xlsx")  # Replace with your actual file
 
-# === 2. Get actual data column names (ignore 'pro') ===
-valid_columns = set(df.columns) - {'pro'}
+# Step 2: Clean pro column and remove quotes if needed
+df['pro'] = df['pro'].astype(str).str.replace('"', '').str.replace("'", '')
 
-# === 3. Function to extract quoted references in 'pro' ===
-def extract_column_refs(pro_string):
-    if not isinstance(pro_string, str):
-        return []
-    # Extract all quoted strings (single or double quotes)
-    matches = re.findall(r"'([^']+)'|\"([^\"]+)\"", pro_string)
-    # Flatten and return only those that match actual column names
-    return [m[0] or m[1] for m in matches if (m[0] or m[1]) in valid_columns]
+# Step 3: Split and explode
+df['pro_split'] = df['pro'].str.split(',')
 
-# === 4. Explode the data ===
-exploded_rows = []
+# Step 4: Explode the list
+exploded_df = df.explode('pro_split')
 
-for idx, row in df.iterrows():
-    refs = extract_column_refs(row["pro"])
-    for col in refs:
-        exploded_rows.append({
-            "RowIndex": idx,
-            "ReferencedColumn": col,
-            "Value": row[col],
-            "OriginalPro": row["pro"]
-        })
+# Step 5: Rename the extracted column
+exploded_df = exploded_df.rename(columns={'pro_split': 'ExtractedColumn'})
 
-# === 5. Final exploded DataFrame ===
-exploded_df = pd.DataFrame(exploded_rows)
+# Optional: Clean whitespace
+exploded_df['ExtractedColumn'] = exploded_df['ExtractedColumn'].str.strip()
 
-# === 6. (Optional) Save to Excel ===
-exploded_df.to_excel("exploded_output.xlsx", index=False)
+# Optional: Save to new Excel file
+exploded_df.to_excel("expanded_output.xlsx", index=False)
 
-# === 7. Preview result ===
+# Show result
 print(exploded_df)
 
 
