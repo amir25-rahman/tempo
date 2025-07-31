@@ -1,3 +1,45 @@
+import pandas as pd
+
+# Sample DataFrame
+df = pd.DataFrame({
+    'RowID': [1, 2, 3],
+    'pro': ["1gg,2bb", "3cc", "3cc_rr,1gg"]
+})
+
+# Split the 'pro' column by ',' into lists
+df['pro_split'] = df['pro'].str.split(',')
+
+# Explode into multiple rows
+exploded_df = df.explode('pro_split')
+
+# Clean column and rename
+exploded_df = exploded_df[['RowID', 'pro_split']].rename(columns={'pro_split': 'ReferencedColumn'})
+
+# Optional: trim whitespace
+exploded_df['ReferencedColumn'] = exploded_df['ReferencedColumn'].str.strip()
+
+print(exploded_df)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def get_column_stats_by_group(df: pd.DataFrame, group_col: str = 'prod_data_src') -> pd.DataFrame:
     if group_col not in df.columns:
         raise ValueError(f"'{group_col}' column not found in dataframe")
