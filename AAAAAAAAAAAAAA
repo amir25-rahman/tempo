@@ -1,25 +1,31 @@
 import pandas as pd
 
-# Sample DataFrame
+# Input data
 df = pd.DataFrame({
-    'RowID': [1, 2, 3],
-    'pro': ["1gg,2bb", "3cc", "3cc_rr,1gg"]
+    "1gg": [10, 11],
+    "2bb": [20, 21],
+    "3cc": [30, 31],
+    "3cc_rr": [300, 310],
+    "pro": ["1gg,2bb", "3cc,3cc_rr"]
 })
 
-# Split the 'pro' column by ',' into lists
-df['pro_split'] = df['pro'].str.split(',')
+# Function to extract referenced values from columns
+def explode_pro_columns(row):
+    if not isinstance(row['pro'], str):
+        return []
 
-# Explode into multiple rows
-exploded_df = df.explode('pro_split')
+    columns = [col.strip() for col in row['pro'].split(',')]
+    return [(row.name, col, row.get(col, None)) for col in columns]
 
-# Clean column and rename
-exploded_df = exploded_df[['RowID', 'pro_split']].rename(columns={'pro_split': 'ReferencedColumn'})
+# Collect all exploded rows
+exploded_rows = []
+for _, row in df.iterrows():
+    exploded_rows.extend(explode_pro_columns(row))
 
-# Optional: trim whitespace
-exploded_df['ReferencedColumn'] = exploded_df['ReferencedColumn'].str.strip()
+# Build the new long-form DataFrame
+result = pd.DataFrame(exploded_rows, columns=['index', 'ReferencedColumn', 'Value'])
 
-print(exploded_df)
-
+print(result)
 
 
 
