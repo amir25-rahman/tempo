@@ -1,32 +1,34 @@
-import pandas as pd
+import re
 
-# Input data
-df = pd.DataFrame({
-    "1gg": [10, 11],
-    "2bb": [20, 21],
-    "3cc": [30, 31],
-    "3cc_rr": [300, 310],
-    "pro": ["1gg,2bb", "3cc,3cc_rr"]
-})
+# Get actual columns
+columns = set(df.columns) - {"logic_expression"}
 
-# Function to extract referenced values from columns
-def explode_pro_columns(row):
-    if not isinstance(row['pro'], str):
-        return []
+# Function to extract referenced columns inside the expression
+def extract_references(expr, valid_columns):
+    # Extract all quoted strings
+    matches = re.findall(r"'([^']+)'|\"([^\"]+)\"", expr)
+    # Flatten and filter to valid columns
+    refs = [m[0] or m[1] for m in matches if (m[0] or m[1]) in valid_columns]
+    return refs
 
-    columns = [col.strip() for col in row['pro'].split(',')]
-    return [(row.name, col, row.get(col, None)) for col in columns]
-
-# Collect all exploded rows
+# Explode the expressions into separate rows
 exploded_rows = []
-for _, row in df.iterrows():
-    exploded_rows.extend(explode_pro_columns(row))
 
-# Build the new long-form DataFrame
-result = pd.DataFrame(exploded_rows, columns=['index', 'ReferencedColumn', 'Value'])
+for idx, row in df.iterrows():
+    refs = extract_references(row["logic_expression"], columns)
+    for ref in refs:
+        value = row.get(ref, None)
+        exploded_rows.append({
+            "row_index": idx,
+            "ReferencedColumn": ref,
+            "Value": value,
+            "OriginalExpression": row["logic_expression"]
+        })
 
-print(result)
+# Create the final exploded DataFrame
+result_df = pd.DataFrame(exploded_rows)
 
+print(result_df)
 
 
 
