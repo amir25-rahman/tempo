@@ -55,6 +55,153 @@ def get_column_stats(df: pd.DataFrame) -> pd.DataFrame:
         duplicate_count = df.duplicated(subset=[col]).sum()
         data_type = str(df[col].dtype)
 
+        special_char_count = 0
+        if df[col].dtype == 'object':
+            series_str = df[col].dropna().astype(str)
+            special_char_count = series_str.str.count(special_char_pattern).sum()
+
+        try:
+            most_freq = df[col].mode(dropna=True).iloc[0]
+        except Exception:
+            most_freq = None
+
+        stats.append({
+            'Column': col,
+            'Data Type': data_type,
+            'Total Rows': total_rows,
+            'Null %': round((null_count / total_rows) * 100, 2) if total_rows > 0 else None,
+            'Unique %': round((unique_count / total_rows) * 100, 2) if total_rows > 0 else None,
+            'Duplicate %': round((duplicate_count / total_rows) * 100, 2) if total_rows > 0 else None,
+            'Special Char Count': int(special_char_count),
+            'Most Frequent Value': most_freq
+        })
+
+    return pd.DataFrame(stats)
+
+# ------------------ Main Loop ------------------
+
+error_log_path = os.path.join(output_dir, 'error_log.txt')
+error_log = []
+
+today_str = datetime.now().strftime("%Y%m%d")
+
+for idx, row in tqdm(table_list_df.iterrows(), total=len(table_list_df)):
+    schema = row['schema']
+    table = row['table']
+    full_table = f'"hive"."{schema}"."{table}"'
+    sheet_name = f"{schema}_{table}"[:31]
+
+    try:
+        query = (
+            f"SELECT * FROM {full_table} "
+            f"WHERE as_of_dt = '{as_of_dt}' "
+            f"LIMIT {sample_limit}"
+        )
+
+        df = pd.read_sql(query, conn)
+
+        if df.empty:
+            msg = f"[WARNING] No rows in {full_table} for as_of_dt = '{as_of_dt}'"
+            print(msg)
+            error_log.append(msg)
+            continue
+
+        stats_df = get_column_stats(df)
+
+        # Add schema and table names columns for joins
+        stats_df['Schema'] = schema
+        stats_df['Table'] = table
+
+        output_filename = f"{schema}.{table}.{today_str}.xlsx"
+        output_path = os.path.join(output_dir, output_filename)
+
+        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+            stats_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        print(f"[SUCCESS] Output saved for {schema}.{table} at {output_path}")
+
+    except Exception as e:
+        err_msg = f"[ERROR] {schema}.{table} - {str(e)}"
+        print(err_msg)
+        traceback_text = traceback.format_exc()
+        error_log.append(f"{err_msg}\n{traceback_text}\n")
+
+if error_log:
+    with open(error_log_path, 'w') as f:
+        f.writelines(line + '\n' for line in error_log)
+    print(f"\n⚠️ Errors encountered. See log at: {error_log_path}")
+
+
+
+###########################################################
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import pyodbc
+import os
+import re
+from datetime import datetime
+from tqdm import tqdm
+import traceback
+
+# ------------------ User Configuration ------------------
+
+uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
+pwd = 'your_password'  # Replace with your actual password
+
+input_path = r'C:\Users\YourUsername\gg\schema_table_list.xlsx'
+output_dir = r"C:\Users\YourUsername\gg\outputs"
+as_of_dt = '2025-07-06'
+sample_limit = 10000
+
+# ------------------ Setup ------------------
+
+os.makedirs(output_dir, exist_ok=True)
+
+conn_str = (
+    "DRIVER={Dremio Connector};"
+    "ConnectionType=Direct;"
+    "HOST=your.dremio.server.com;"
+    "PORT=31010;"
+    "AuthenticationType=Plain;"
+    f"UID={uid};"
+    f"PWD={pwd};"
+    "SSL=1;"
+    "SSLVerifyServer=1;"
+    "UseSystemTrustStore=1;"
+    "TLSMinVersion=TLSv1.2;"
+)
+
+conn = pyodbc.connect(conn_str, autocommit=True)
+
+table_list_df = pd.read_excel(input_path)
+required_cols = {'schema', 'table'}
+if not required_cols.issubset(table_list_df.columns):
+    raise ValueError(f"Excel must contain the following columns: {required_cols}")
+
+# ------------------ Stats Function ------------------
+
+def get_column_stats(df: pd.DataFrame) -> pd.DataFrame:
+    stats = []
+    total_rows = len(df)
+    special_char_pattern = re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+
+    for col in df.columns:
+        null_count = df[col].isna().sum()
+        unique_count = df[col].nunique(dropna=True)
+        duplicate_count = df.duplicated(subset=[col]).sum()
+        data_type = str(df[col].dtype)
+
         # Special character count (only for string-like columns)
         special_char_count = 0
         if df[col].dtype == 'object':
