@@ -1,28 +1,31 @@
 import pandas as pd
+import re
 
-# Step 1: Load Excel
-df = pd.read_excel("your_file.xlsx")  # Replace with your actual file
+# Sample data
+data = {
+    '1gg': [10],
+    '2gg': [20],
+    'pro': ['rpefj = ("1gg", \'2gg\')']
+}
+df = pd.DataFrame(data)
 
-# Step 2: Clean pro column and remove quotes if needed
-df['pro'] = df['pro'].astype(str).str.replace('"', '').str.replace("'", '')
+# Extract quoted items
+def extract_items(value):
+    if not isinstance(value, str):
+        return []
+    return re.findall(r"'([^']+)'|\"([^\"]+)\"", value)
 
-# Step 3: Split and explode
-df['pro_split'] = df['pro'].str.split(',')
+# Apply extraction
+df['extracted'] = df['pro'].apply(lambda x: [i[0] or i[1] for i in extract_items(x)])
 
-# Step 4: Explode the list
-exploded_df = df.explode('pro_split')
+# Explode into separate rows
+df_exp = df.explode('extracted').reset_index(drop=True)
 
-# Step 5: Rename the extracted column
-exploded_df = exploded_df.rename(columns={'pro_split': 'ExtractedColumn'})
+# Rename for clarity
+df_exp = df_exp.rename(columns={'extracted': 'extracted_item'})
 
-# Optional: Clean whitespace
-exploded_df['ExtractedColumn'] = exploded_df['ExtractedColumn'].str.strip()
+print(df_exp[['extracted_item']])
 
-# Optional: Save to new Excel file
-exploded_df.to_excel("expanded_output.xlsx", index=False)
-
-# Show result
-print(exploded_df)
 
 
 
