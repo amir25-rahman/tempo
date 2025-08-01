@@ -1,3 +1,109 @@
+import pandas as pd
+import pyarrow.parquet as pq
+import os
+import re
+from collections import Counter
+from glob import glob
+
+def get_special_char_count(series):
+    if series.dtype != object:
+        return 0
+    pattern = re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+    return series.dropna().astype(str).apply(lambda x: len(pattern.findall(x))).sum()
+
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0%"
+    elif null_pct < 10:
+        return "<10%"
+    elif null_pct < 50:
+        return "10-50%"
+    else:
+        return ">50%"
+
+def analyze_parquet_file(file_path):
+    try:
+        table = pq.read_table(file_path)
+        df = table.to_pandas()
+    except Exception as e:
+        print(f"Failed to read {file_path}: {e}")
+        return []
+
+    # Extract table, schema, label from filename
+    base_name = os.path.basename(file_path).replace('.parquet', '')
+    parts = base_name.split('.')
+    if len(parts) < 3:
+        print(f"Filename format incorrect: {base_name}")
+        return []
+    table_label, schema, table_name = parts[-3:]
+
+    total_rows = len(df)
+    if total_rows == 0:
+        return []
+
+    prd_src = df['prd_src'].iloc[0] if 'prd_src' in df.columns else 'UNKNOWN'
+
+    results = []
+    for col in df.columns:
+        if col == 'prd_src':
+            continue
+
+        series = df[col]
+        null_count = series.isnull().sum()
+        null_pct = (null_count / total_rows) * 100
+        null_bucket = get_null_bucket(null_pct)
+        unique_pct = (series.nunique(dropna=True) / total_rows) * 100
+        duplicated_pct = ((total_rows - series.nunique(dropna=True)) / total_rows) * 100
+        special_char_count = get_special_char_count(series)
+        most_freq_val = series.mode().iloc[0] if not series.mode().empty else None
+
+        results.append({
+            'prd_src': prd_src,
+            'column': col,
+            'data_type': str(series.dtype),
+            'null_count': null_count,
+            'null_pct': round(null_pct, 2),
+            'null_bucket': null_bucket,
+            'unique_pct': round(unique_pct, 2),
+            'duplicated_pct': round(duplicated_pct, 2),
+            'special_char_count': special_char_count,
+            'most_frequent_value': most_freq_val,
+            'total_rows': total_rows,
+            'schema': schema,
+            'table_label': table_label,
+            'table': table_name
+        })
+
+    return results
+
+# ---------- MAIN SCRIPT ----------
+input_folder = r'/path/to/parquet/files'  # Replace with your path
+parquet_files = glob(os.path.join(input_folder, '*.parquet'))
+
+all_stats = []
+for file in parquet_files:
+    stats = analyze_parquet_file(file)
+    if stats:
+        all_stats.extend(stats)
+
+df_stats = pd.DataFrame(all_stats)
+df_stats.sort_values(by=['prd_src', 'schema', 'table'], inplace=True)
+
+# Optional: Save to Excel or CSV
+df_stats.to_excel('parquet_stats_report.xlsx', index=False)
+# df_stats.to_csv('parquet_stats_report.csv', index=False)
+
+print("Analysis complete. Report saved.")
+
+
+
+
+
+
+
+
+
+
 import pyarrow as pa
 import pyarrow.flight as flight
 import pandas as pd
