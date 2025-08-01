@@ -1,3 +1,15 @@
+
+# Convert datetime.date columns to pandas datetime or string
+for col in df_stats.select_dtypes(include=['object']).columns:
+    if df_stats[col].apply(lambda x: isinstance(x, pd.Timestamp) or isinstance(x, pd.NaT)).any():
+        continue
+    if df_stats[col].apply(lambda x: isinstance(x, (datetime.date, datetime.time))).any():
+        df_stats[col] = df_stats[col].astype(str)
+
+
+
+
+
 import pandas as pd
 import pyarrow.parquet as pq
 import os
