@@ -3,8 +3,8 @@ import pandas as pd
 
 # --------- Static Configuration ---------
 
-host = 'your.dremio.server.com'     # Replace with your Dremio host
-port = 32010                        # Arrow Flight TLS port
+host = 'your.dremio.server.com'     # Replace with your Dremio host (e.g., localhost or a Dremio Cloud host)
+port = 32010                        # Default Arrow Flight TLS port
 
 username = 'your_username'          # Replace with your Dremio username
 password = 'your_password'          # Replace with your Dremio password
@@ -13,24 +13,33 @@ query = "SELECT 1 AS test_column"   # Simple test query
 
 # --------- Connect to Dremio via Arrow Flight ---------
 
+# Create Flight client
 location = flight.Location.for_grpc_tls(host, port)
 client = flight.FlightClient(location)
 
-# Authenticate
-headers = client.authenticate_basic_token(username, password)
+# Authenticate using basic token (username/password)
+try:
+    headers = client.authenticate_basic_token(username, password)
+except Exception as e:
+    raise Exception(f"❌ Authentication failed: {e}")
 
-# Run query
-descriptor = flight.FlightDescriptor.for_command(query)
-info = client.get_flight_info(descriptor, headers=headers)
-endpoint = info.endpoints[0]
-reader = client.do_get(endpoint.ticket, headers=headers)
-table = reader.read_all()
+# Run SQL query
+try:
+    descriptor = flight.FlightDescriptor.for_command(query)
+    info = client.get_flight_info(descriptor, headers=headers)
 
-# Convert to DataFrame
-df = table.to_pandas()
+    # Use the first endpoint (assuming a single fragment)
+    reader = client.do_get(info.endpoints[0].ticket, headers=headers)
+    table = reader.read_all()
 
-# Print result
-print(df)
+    # Convert to pandas DataFrame and print
+    df = table.to_pandas()
+    print("✅ Query successful. Result:")
+    print(df)
+
+except Exception as e:
+    raise Exception(f"❌ Query failed: {e}")
+
 
 
 
