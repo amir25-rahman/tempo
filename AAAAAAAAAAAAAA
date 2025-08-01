@@ -1,45 +1,267 @@
+import pyarrow as pa
 import pyarrow.flight as flight
 import pandas as pd
+from typing import Optional, Dict, Any
 
-# --------- Static Configuration ---------
+class ArrowFlightClient:
+    def __init__(self, host: str = "localhost", port: int = 8080, 
+                 username: Optional[str] = None, password: Optional[str] = None,
+                 tls: bool = False):
+        """
+        Initialize Arrow Flight client
+        
+        Args:
+            host: Flight server hostname
+            port: Flight server port
+            username: Optional username for authentication
+            password: Optional password for authentication
+            tls: Whether to use TLS encryption
+        """
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.tls = tls
+        self.client = None
+        
+    def connect(self) -> flight.FlightClient:
+        """Establish connection to Arrow Flight server"""
+        try:
+            # Create connection URI
+            scheme = "grpc+tls" if self.tls else "grpc"
+            uri = f"{scheme}://{self.host}:{self.port}"
+            
+            # Create client
+            self.client = flight.connect(uri)
+            
+            # Authenticate if credentials provided
+            if self.username and self.password:
+                self.authenticate()
+                
+            print(f"Successfully connected to {uri}")
+            return self.client
+            
+        except Exception as e:
+            print(f"Failed to connect: {e}")
+            raise
+    
+    def authenticate(self):
+        """Authenticate with the Flight server"""
+        try:
+            bearer_token = self.client.authenticate_basic_token(
+                self.username, self.password
+            )
+            print("Authentication successful")
+        except Exception as e:
+            print(f"Authentication failed: {e}")
+            raise
+    
+    def list_flights(self) -> list:
+        """List available flights from the server"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            flights = list(self.client.list_flights())
+            print(f"Found {len(flights)} flights")
+            return flights
+        except Exception as e:
+            print(f"Failed to list flights: {e}")
+            return []
+    
+    def get_flight_info(self, descriptor: flight.FlightDescriptor):
+        """Get information about a specific flight"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            flight_info = self.client.get_flight_info(descriptor)
+            print(f"Flight info: {flight_info}")
+            return flight_info
+        except Exception as e:
+            print(f"Failed to get flight info: {e}")
+            return None
+    
+    def do_get(self, ticket: flight.Ticket) -> pa.Table:
+        """Retrieve data using a flight ticket"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            flight_reader = self.client.do_get(ticket)
+            table = flight_reader.read_all()
+            print(f"Retrieved table with {table.num_rows} rows, {table.num_columns} columns")
+            return table
+        except Exception as e:
+            print(f"Failed to retrieve data: {e}")
+            return None
+    
+    def do_put(self, descriptor: flight.FlightDescriptor, table: pa.Table):
+        """Send data to the server"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            upload_descriptor, writer = self.client.do_put(descriptor, table.schema)
+            writer.write_table(table)
+            writer.close()
+            print(f"Successfully uploaded table with {table.num_rows} rows")
+        except Exception as e:
+            print(f"Failed to upload data: {e}")
+    
+    def do_action(self, action_type: str, body: bytes = b"") -> list:
+        """Execute an action on the server"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            action = flight.Action(action_type, body)
+            results = list(self.client.do_action(action))
+            print(f"Action '{action_type}' completed, got {len(results)} results")
+            return results
+        except Exception as e:
+            print(f"Failed to execute action: {e}")
+            return []
+    
+    def close(self):
+        """Close the connection"""
+        if self.client:
+            self.client.close()
+            print("Connection closed")
 
-host = 'your.dremio.server.com'     # Replace with your Dremio host (e.g., localhost or a Dremio Cloud host)
-port = 32010                        # Default Arrow Flight TLS port
 
-username = 'your_username'          # Replace with your Dremio username
-password = 'your_password'          # Replace with your Dremio password
+    def query_data(self, sql_query: str) -> pa.Table:
+        """Execute SQL query and return results"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            # Create command descriptor with SQL query
+            command = flight.FlightDescriptor.for_command(sql_query.encode('utf-8'))
+            
+            # Get flight info for the query
+            flight_info = self.client.get_flight_info(command)
+            
+            # Get the ticket from first endpoint
+            ticket = flight_info.endpoints[0].ticket
+            
+            # Execute query and get results
+            flight_reader = self.client.do_get(ticket)
+            table = flight_reader.read_all()
+            
+            print(f"Query executed successfully: {table.num_rows} rows, {table.num_columns} columns")
+            return table
+            
+        except Exception as e:
+            print(f"Query failed: {e}")
+            return None
 
-query = "SELECT 1 AS test_column"   # Simple test query
+    def query_by_path(self, dataset_path: str) -> pa.Table:
+        """Query data by dataset path"""
+        if not self.client:
+            raise Exception("Not connected. Call connect() first.")
+        
+        try:
+            # Create path descriptor
+            descriptor = flight.FlightDescriptor.for_path(dataset_path)
+            
+            # Get flight info
+            flight_info = self.client.get_flight_info(descriptor)
+            
+            # Get ticket and retrieve data
+            ticket = flight_info.endpoints[0].ticket
+            flight_reader = self.client.do_get(ticket)
+            table = flight_reader.read_all()
+            
+            print(f"Retrieved dataset '{dataset_path}': {table.num_rows} rows, {table.num_columns} columns")
+            return table
+            
+        except Exception as e:
+            print(f"Failed to retrieve dataset: {e}")
+            return None
 
-# --------- Connect to Dremio via Arrow Flight ---------
 
-# Create Flight client
-location = flight.Location.for_grpc_tls(host, port)
-client = flight.FlightClient(location)
+def main():
+    """Simple query example"""
+    
+    # Initialize client with your server details
+    client = ArrowFlightClient(
+        host="localhost",          # Change to your server host
+        port=8080,                # Change to your server port
+        username=None,            # Add username if required
+        password=None,            # Add password if required
+        tls=False                 # Set True if using TLS
+    )
+    
+    try:
+        # Connect to server
+        client.connect()
+        
+        # Method 1: Query by SQL (if your server supports SQL commands)
+        sql_query = "SELECT * FROM your_table_name LIMIT 10"
+        print(f"Executing SQL query: {sql_query}")
+        
+        table = client.query_data(sql_query)
+        if table:
+            df = table.to_pandas()
+            print("\nQuery Results:")
+            print(df.head())
+            print(f"\nShape: {df.shape}")
+        
+        # Method 2: Query by dataset path (common approach)
+        dataset_path = "your_dataset_name"  # Replace with actual dataset name
+        print(f"\nQuerying dataset: {dataset_path}")
+        
+        table = client.query_by_path(dataset_path)
+        if table:
+            df = table.to_pandas()
+            print("\nDataset Results:")
+            print(df.head())
+            print(f"\nShape: {df.shape}")
+        
+        # Method 3: List all available datasets first
+        print("\nListing available flights:")
+        flights = client.list_flights()
+        for flight in flights:
+            print(f"- {flight.descriptor}")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    
+    finally:
+        client.close()
 
-# Authenticate using basic token (username/password)
-try:
-    headers = client.authenticate_basic_token(username, password)
-except Exception as e:
-    raise Exception(f"❌ Authentication failed: {e}")
 
-# Run SQL query
-try:
-    descriptor = flight.FlightDescriptor.for_command(query)
-    info = client.get_flight_info(descriptor, headers=headers)
+def simple_query_example():
+    """Minimal example for quick data retrieval"""
+    
+    # Quick connection and query
+    client = ArrowFlightClient("localhost", 8080)
+    
+    try:
+        client.connect()
+        
+        # Replace with your actual dataset name or SQL query
+        table = client.query_by_path("my_dataset")
+        
+        if table:
+            # Convert to pandas and display
+            df = table.to_pandas()
+            print("Data retrieved:")
+            print(df)
+            
+            # Optional: Save to file
+            # df.to_csv("query_results.csv", index=False)
+            # table.to_parquet("query_results.parquet")
+            
+    except Exception as e:
+        print(f"Query failed: {e}")
+    finally:
+        client.close()
 
-    # Use the first endpoint (assuming a single fragment)
-    reader = client.do_get(info.endpoints[0].ticket, headers=headers)
-    table = reader.read_all()
 
-    # Convert to pandas DataFrame and print
-    df = table.to_pandas()
-    print("✅ Query successful. Result:")
-    print(df)
-
-except Exception as e:
-    raise Exception(f"❌ Query failed: {e}")
-
+if __name__ == "__main__":
+    main()
 
 
 
