@@ -1,46 +1,37 @@
 import pyarrow.flight as flight
-import pyarrow as pa
 import pandas as pd
-import ssl
 
-# ----------------- Configuration ------------------
+# --------- Static Configuration ---------
 
-host = 'your.dremio.server.com'      # Replace with your Dremio hostname
-port = 32010                         # Default Arrow Flight port
-username_path = r"C:\Users\YourUsername\gg\Shan.txt"
-query = "SELECT 1 AS test_column"    # Test query
+host = 'your.dremio.server.com'     # Replace with your Dremio host
+port = 32010                        # Arrow Flight TLS port
 
-# ----------------- Read Credentials ----------------
+username = 'your_username'          # Replace with your Dremio username
+password = 'your_password'          # Replace with your Dremio password
 
-with open(username_path, 'r') as f:
-    username = f.read().strip()
+query = "SELECT 1 AS test_column"   # Simple test query
 
-password = 'your_password_here'  # Replace this
+# --------- Connect to Dremio via Arrow Flight ---------
 
-# ----------------- Flight Connection ----------------
-
-# Arrow Flight endpoint
 location = flight.Location.for_grpc_tls(host, port)
 client = flight.FlightClient(location)
 
 # Authenticate
-try:
-    headers = client.authenticate_basic_token(username, password)
-except Exception as e:
-    raise Exception(f"Authentication failed: {e}")
+headers = client.authenticate_basic_token(username, password)
 
 # Run query
-try:
-    descriptor = flight.FlightDescriptor.for_command(query)
-    info = client.get_flight_info(descriptor, headers=headers)
-    endpoint = info.endpoints[0]
-    reader = client.do_get(endpoint.ticket, headers=headers)
-    table = reader.read_all()
-    df = table.to_pandas()
-    print("✅ Query successful. Sample output:")
-    print(df)
-except Exception as e:
-    raise Exception(f"Query failed: {e}")
+descriptor = flight.FlightDescriptor.for_command(query)
+info = client.get_flight_info(descriptor, headers=headers)
+endpoint = info.endpoints[0]
+reader = client.do_get(endpoint.ticket, headers=headers)
+table = reader.read_all()
+
+# Convert to DataFrame
+df = table.to_pandas()
+
+# Print result
+print(df)
+
 
 
 
