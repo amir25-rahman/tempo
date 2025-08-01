@@ -1,4 +1,19 @@
 
+import datetime
+
+def convert_datetime_objects(df):
+    for col in df.columns:
+        if df[col].apply(lambda x: isinstance(x, (datetime.date, datetime.time))).any():
+            df[col] = df[col].astype(str)
+    return df
+
+df_stats = convert_datetime_objects(df_stats)
+
+
+
+
+
+
 # Convert datetime.date columns to pandas datetime or string
 for col in df_stats.select_dtypes(include=['object']).columns:
     if df_stats[col].apply(lambda x: isinstance(x, pd.Timestamp) or isinstance(x, pd.NaT)).any():
