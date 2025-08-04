@@ -1,3 +1,38 @@
+## Method 2: Using LOOKUPVALUE()
+
+This method works regardless of active relationships:
+
+```dax
+Left Join Indicator = 
+IF(
+    ISBLANK(
+        LOOKUPVALUE(
+            Table2[PK_Check],
+            Table2[PK_Check], Table1[PK_COMP]
+        )
+    ),
+    "Not in Table2",
+    "In Table2"
+)
+```
+
+## Method 3: Using COUNTROWS() and FILTER()
+
+For a more robust approach that handles duplicates:
+
+```dax
+Left Join Indicator = 
+IF(
+    COUNTROWS(
+        FILTER(
+            Table2,
+            Table2[PK_Check] = Table1[PK_COMP]
+        )
+    ) = 0,
+    "Not in Table2",
+    "In Table2"
+)
+
 
 import datetime
 
