@@ -1,28 +1,13 @@
-Dynamic Records = 
-VAR HasSystemSelection = NOT ISBLANK(SELECTEDVALUE('YourTable'[System]))
-VAR HasTableSelection = NOT ISBLANK(SELECTEDVALUE('YourTable'[Table]))
-VAR HasSchemaSelection = NOT ISBLANK(SELECTEDVALUE('YourTable'[Schema]))
-
-RETURN
-SWITCH(
-    TRUE(),
-    HasSystemSelection, MAX('YourTable'[Max Rows]),
-    HasTableSelection, 
-        SUMX(
-            SUMMARIZE('YourTable', 'YourTable'[Schema], 'YourTable'[Table], 'YourTable'[System]),
-            CALCULATE(MAX('YourTable'[Max Rows]))
-        ),
-    HasSchemaSelection,
-        SUMX(
-            SUMMARIZE('YourTable', 'YourTable'[Schema], 'YourTable'[Table], 'YourTable'[System]),
-            CALCULATE(MAX('YourTable'[Max Rows]))
-        ),
-    SUMX(
-        SUMMARIZE('YourTable', 'YourTable'[Schema], 'YourTable'[Table], 'YourTable'[System]),
-        CALCULATE(MAX('YourTable'[Max Rows]))
+Control Filter Warning = 
+VAR Selected = SELECTEDVALUE('ff'[Column2])
+RETURN 
+    SWITCH(
+        TRUE(),
+        ISBLANK(Selected), BLANK(),
+        Selected = "Y", "⚠️ Warning: Filtering all dataset wtih QC ONLY",
+        Selected = "N", "⚠️ Warning: Filtering all datasets without any QC",
+        " "
     )
-)
-
 
 
 
