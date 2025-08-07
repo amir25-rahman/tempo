@@ -1,3 +1,49 @@
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, count, countDistinct, lit
+
+# Initialize Spark
+spark = SparkSession.builder.appName("ColumnStats").getOrCreate()
+
+# Example DataFrame (replace this with your real DataFrame)
+data = [
+    (1, "A", None),
+    (2, "B", "X"),
+    (3, "B", "X"),
+    (4, None, "Y"),
+    (None, "A", "Z"),
+    (2, "B", "X"),
+]
+columns = ["col1", "col2", "col3"]
+df = spark.createDataFrame(data, columns)
+
+# Total number of rows
+total_rows = df.count()
+
+# Loop through each column to compute stats
+stats = []
+for column in df.columns:
+    null_count = df.filter(col(column).isNull()).count()
+    unique_count = df.select(column).distinct().count()
+    duplicate_count = total_rows - unique_count
+    
+    stats.append({
+        "column": column,
+        "null_%": round((null_count / total_rows) * 100, 2),
+        "unique_%": round((unique_count / total_rows) * 100, 2),
+        "duplicate_%": round((duplicate_count / total_rows) * 100, 2)
+    })
+
+# Convert to a DataFrame for display
+stats_df = spark.createDataFrame(stats)
+stats_df.show(truncate=False)
+
+
+
+
+
+
+
 Control Filter Warning = 
 VAR Selected = SELECTEDVALUE('ff'[Column2])
 RETURN 
