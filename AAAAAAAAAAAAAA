@@ -1,3 +1,162 @@
+
+
+import pandas as pd
+import pyarrow.parquet as pq
+import os
+import re
+from glob import glob
+
+def get_special_char_count(series):
+    if series.dtype != object:
+        return 0
+    pattern = re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+    return series.dropna().astype(str).apply(lambda x: len(pattern.findall(x))).sum()
+
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0%"
+    elif null_pct < 10:
+        return "<10%"
+    elif null_pct < 50:
+        return "10-50%"
+    else:
+        return ">50%"
+
+# --- NEW PART START ---
+def analyze_series(series, top_n=3, top5_n=5):
+    total = len(series)
+    uniques = series.nunique(dropna=True)
+    dups = total - uniques if total > 0 else 0
+    
+    dup_pct = round((dups / total) * 100, 2) if total > 0 else 0
+    uniq_pct = round(100 - dup_pct, 2) if total > 0 else 0
+    
+    counts = series.value_counts(dropna=True)
+    
+    # Duplicates list (summary)
+    dup_list = [f"{v}({c})" for v, c in counts.items() if c > 1]
+    if len(dup_list) > top_n:
+        dup_list = dup_list[:top_n] + [f"...+{len(dup_list) - top_n}"]
+    dup_str = ", ".join(dup_list) if dup_list else "None"
+    
+    # Unique count only
+    uniq_count = (counts == 1).sum()
+    
+    # Top 5 duplicates
+    dup_top5 = counts[counts > 1].head(top5_n)
+    dup_top5_str = ", ".join(f"{v}({c})" for v, c in dup_top5.items()) if not dup_top5.empty else "None"
+    
+    # Top 5 uniques
+    uniq_top5 = counts[counts == 1].head(top5_n)
+    uniq_top5_str = ", ".join(str(v) for v in uniq_top5.index) if not uniq_top5.empty else "None"
+    
+    return {
+        'Dups_freq': dup_str,
+        'Uniq_freq': uniq_count,
+        'Dups_freq_5_max': dup_top5_str,
+        'Uniq_freq_5_max': uniq_top5_str,
+        'Dup%': dup_pct,
+        'Uniq%': uniq_pct
+    }
+# --- NEW PART END ---
+
+def analyze_parquet_file(file_path):
+    try:
+        table = pq.read_table(file_path)
+        df = table.to_pandas()
+    except Exception as e:
+        print(f"Failed to read {file_path}: {e}")
+        return []
+
+    base_name = os.path.basename(file_path).replace('.parquet', '')
+    parts = base_name.split('.')
+    if len(parts) < 3:
+        print(f"Filename format incorrect: {base_name}")
+        return []
+
+    table_label, schema, table_name = parts[-3:]
+    total_rows = len(df)
+    if total_rows == 0:
+        return []
+
+    prd_src = df['prd_src'].iloc[0] if 'prd_src' in df.columns else 'UNKNOWN'
+
+    results = []
+    for col in df.columns:
+        if col == 'prd_src':
+            continue
+
+        series = df[col]
+        null_count = series.isnull().sum()
+        null_pct = (null_count / total_rows) * 100
+        null_bucket = get_null_bucket(null_pct)
+        special_char_count = get_special_char_count(series)
+        most_freq_val = series.mode().iloc[0] if not series.mode().empty else None
+        
+        # --- NEW PART START ---
+        # Get detailed duplicate and unique stats for this column
+        freq_stats = analyze_series(series)
+        # --- NEW PART END ---
+
+        results.append({
+            'prd_src': prd_src,
+            'column': col,
+            'data_type': str(series.dtype),
+            'null_count': null_count,
+            'null_pct': round(null_pct, 2),
+            'null_bucket': null_bucket,
+            'special_char_count': special_char_count,
+            'most_frequent_value': most_freq_val,
+            'total_rows': total_rows,
+            'schema': schema,
+            'table_label': table_label,
+            'table': table_name,
+            # --- NEW PART START ---
+            # Add detailed freq stats:
+            'Dup%': freq_stats['Dup%'],
+            'Uniq%': freq_stats['Uniq%'],
+            'Dups_freq': freq_stats['Dups_freq'],
+            'Uniq_freq': freq_stats['Uniq_freq'],
+            'Dups_freq_5_max': freq_stats['Dups_freq_5_max'],
+            'Uniq_freq_5_max': freq_stats['Uniq_freq_5_max'],
+            # --- NEW PART END ---
+        })
+
+    return results
+
+# ---------- MAIN SCRIPT ----------
+input_folder = r'/path/to/parquet/files'  # Replace with your path
+parquet_files = glob(os.path.join(input_folder, '*.parquet'))
+
+all_stats = []
+for file in parquet_files:
+    stats = analyze_parquet_file(file)
+    if stats:
+        all_stats.extend(stats)
+
+df_stats = pd.DataFrame(all_stats)
+df_stats.sort_values(by=['prd_src', 'schema', 'table'], inplace=True)
+
+# Optional: Save to Excel or CSV
+df_stats.to_excel('parquet_stats_report.xlsx', index=False)
+# df_stats.to_csv('parquet_stats_report.csv', index=False)
+
+print("Analysis complete. Report saved.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import pyarrow.parquet as pq
 import os
