@@ -1,3 +1,292 @@
+import os
+import re
+import datetime
+from glob import glob
+from functools import lru_cache
+from typing import List, Dict, Any, Optional
+
+import pandas as pd
+import pyarrow.parquet as pq
+
+
+# ---------------- Helper Functions ---------------- #
+@lru_cache(maxsize=1)
+def get_special_char_pattern():
+    """Cache compiled regex pattern for special characters."""
+    return re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+
+
+def get_special_char_count_vectorized(series: pd.Series) -> int:
+    try:
+        if series.dtype != object or series.empty:
+            return 0
+        
+        str_array = series.dropna().astype(str)
+        if str_array.empty:
+            return 0
+        
+        pattern = get_special_char_pattern()
+        return sum(len(pattern.findall(text)) for text in str_array)
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=100)
+def get_null_bucket(null_pct: float) -> str:
+    """Bucketize null percentage into predefined ranges."""
+    if null_pct == 0:
+        return '0%'
+    elif null_pct < 0.25:
+        return '0-24%'
+    elif null_pct < 0.50:
+        return '25-49%'
+    elif null_pct < 0.75:
+        return '50-74%'
+    elif null_pct < 1:
+        return '75-99%'
+    elif null_pct == 1:
+        return '100%'
+    return "Unknown"
+
+
+def safe_convert_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert data types to reduce memory usage."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Convert to categorical if it saves memory and has reasonable cardinality
+                unique_ratio = df[col].nunique() / len(df)
+                if unique_ratio < 0.3 and df[col].nunique() < 10000:
+                    try:
+                        df[col] = df[col].astype('category')
+                    except:
+                        pass
+        return df
+    except Exception:
+        return df
+
+
+def get_top_duplicates_safe(series: pd.Series, top_n: int = 5) -> str:
+    """Extract top duplicate values with error handling."""
+    try:
+        # Get value counts for the full series (not sampled)
+        counts = series.value_counts(dropna=True)
+        duplicated_counts = counts[counts > 1]
+        
+        if duplicated_counts.empty:
+            return "None"
+        
+        if len(duplicated_counts) > top_n:
+            top_dups = duplicated_counts.head(top_n)
+            remaining = len(duplicated_counts) - top_n
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in top_dups.items()] + [f"...+{remaining}"]
+        else:
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in duplicated_counts.items()]
+        
+        return ", ".join(dup_list)
+    except Exception:
+        return "Error calculating duplicates"
+
+
+def process_single_column(col_name: str, series: pd.Series, total_rows: int, prod_sys: str, top_n: int = 5) -> Optional[Dict[str, Any]]:
+    try:
+        if col_name == "prod_sys":
+            return None
+        
+        null_count = int(series.isnull().sum())
+        null_pct = null_count / total_rows if total_rows > 0 else 0
+        
+        try:
+            unique_count = int(series.nunique(dropna=True))
+        except:
+            unique_count = 0
+            
+        unique_pct = unique_count / total_rows if total_rows > 0 else 0
+        duplicated_pct = (total_rows - unique_count) / total_rows if total_rows > 0 else 0
+        
+        special_char_count = get_special_char_count_vectorized(series)
+        
+        try:
+            mode_values = series.mode()
+            most_freq_val = mode_values.iloc[0] if not mode_values.empty else None
+            if most_freq_val is not None:
+                most_freq_val = str(most_freq_val)[:100]
+        except:
+            most_freq_val = "Error calculating mode"
+        
+        dup_str = get_top_duplicates_safe(series, top_n)
+        
+        return {
+            'column': col_name,
+            'data_type': str(series.dtype),
+            'null_count': null_count,
+            'null_pct': round(null_pct * 100, 2),
+            'null_bucket': get_null_bucket(null_pct),
+            'unique_pct': round(unique_pct * 100, 4),
+            'duplicated_pct': round(duplicated_pct * 100, 4),
+            'special_char_count': special_char_count,
+            'most_frequent_value': most_freq_val,
+            'total_rows': total_rows,
+            'prod_sys': str(prod_sys),
+            'Dups_freq_5_max': dup_str
+        }
+        
+    except Exception:
+        return None
+
+
+def analyze_parquet_file_safe(file_path: str, top_n: int = 5) -> List[Dict[str, Any]]:
+    results = []
+    
+    try:
+        try:
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        except Exception:
+            try:
+                table = pq.read_table(file_path)
+                df = table.to_pandas()
+                del table
+            except Exception:
+                raise Exception("Failed to read parquet file")
+        
+        base_name = os.path.basename(file_path).replace('.parquet', '')
+        parts = base_name.split('.')
+        if len(parts) < 3:
+            raise Exception(f"Filename format incorrect: {base_name}")
+
+        table_label, schema, table_name = parts[-3:]
+        
+        if df.empty:
+            raise Exception("DataFrame is empty")
+        
+        if 'prod_sys' not in df.columns:
+            raise Exception("prod_sys column not found")
+
+        df = safe_convert_dtypes(df)
+        
+        try:
+            grouped = df.groupby('prod_sys', observed=True)
+        except:
+            raise Exception("Failed to group by prod_sys")
+        
+        for prod_sys, group_df in grouped:
+            total_rows = len(group_df)
+            if total_rows == 0:
+                continue
+            
+            for col in group_df.columns:
+                result = process_single_column(col, group_df[col], total_rows, prod_sys, top_n)
+                if result is not None:
+                    result.update({
+                        'schema': schema,
+                        'table': table_name
+                    })
+                    results.append(result)
+        
+    except Exception as e:
+        raise Exception(str(e))
+    
+    return results
+
+
+def convert_datetime_objects_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime objects to strings for compatibility."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Check if column contains datetime objects using full sample
+                sample_data = df[col].dropna()
+                if not sample_data.empty:
+                    # Check a reasonable sample size for datetime detection
+                    check_size = min(1000, len(sample_data))
+                    has_datetime = sample_data.head(check_size).apply(
+                        lambda x: isinstance(x, (datetime.date, datetime.time, datetime.datetime))
+                    ).any()
+                    if has_datetime:
+                        df[col] = df[col].astype(str)
+        return df
+    except Exception:
+        return df
+
+
+# ---------------- Main Script ---------------- #
+def main():
+    input_folder = r"C:\Users\NULL\Desktop\pdf codes\DD"
+    parquet_files = glob(os.path.join(input_folder, "*.parquet"))
+    
+    if not parquet_files:
+        print("No parquet files found!")
+        return
+    
+    all_stats = []
+    failed_files = []
+    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    for file_path in parquet_files:
+        print(f"Processing: {file_path}")
+        try:
+            stats = analyze_parquet_file_safe(file_path)
+            if stats:
+                all_stats.extend(stats)
+        except Exception as e:
+            failed_files.append({
+                'file_path': file_path,
+                'error': str(e),
+                'date': today_date
+            })
+            continue
+
+    if failed_files:
+        failed_df = pd.DataFrame(failed_files)
+        failed_output = r'C:/Users/NULL/Desktop/pdf codes/DD/failed_files_' + today_date + '.parquet'
+        failed_df.to_parquet(failed_output, index=False, engine='pyarrow')
+        print(f"Failed files report saved: {failed_output}")
+
+    if not all_stats:
+        print("No data to process!")
+        return
+    
+    try:
+        df_stats = pd.DataFrame(all_stats)
+        df_stats = df_stats.sort_values(by=['prod_sys', 'schema', 'table'])
+        df_stats = convert_datetime_objects_safe(df_stats)
+        df_stats["most_frequent_value"] = df_stats["most_frequent_value"].astype(str)
+
+        output_file = r'C:/Users/NULL/Desktop/pdf codes/DD/parquet_stats_report.parquet'
+        df_stats.to_parquet(output_file, index=False, engine='pyarrow')
+        
+        print("Analysis complete. Report saved.")
+        
+    except Exception:
+        print("Error creating final report.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 import pyodbc
