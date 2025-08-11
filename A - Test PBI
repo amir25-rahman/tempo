@@ -1,3 +1,17 @@
+WorkWeekGroup =
+VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
+VAR IsWorkday = WEEKDAY(CurrentDate, 2) <= 5
+VAR WeekStart = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
+VAR WeekEnd = WeekStart + 4
+RETURN
+IF(
+    IsWorkday,
+    FORMAT(WeekStart, "mmm dd") & " - " & FORMAT(WeekEnd, "mmm dd"),
+    BLANK()
+)
+
+
+
 WeekStartDate =
 'DSTBTN_BATCH_DTL'[BUSINESS_DATE] - WEEKDAY('DSTBTN_BATCH_DTL'[BUSINESS_DATE], 2) + 1
 
