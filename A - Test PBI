@@ -1,3 +1,4 @@
+d
 IsHoliday =
 VAR DateOnly = 'Fact'[TransactionDateOnly]  -- or 'Fact'[TransactionDate] if already date-only
 RETURN
