@@ -1,3 +1,30 @@
+IsHoliday =
+VAR DateOnly = 'Fact'[TransactionDateOnly]  -- or 'Fact'[TransactionDate] if already date-only
+RETURN
+SWITCH(
+    TRUE(),
+    DateOnly IN {
+        DATE(2025,1,1),   -- New Year's Day
+        DATE(2025,1,20),  -- Martin Luther King Jr. Day
+        DATE(2025,2,17),  -- Presidents' Day
+        DATE(2025,5,26),  -- Memorial Day
+        DATE(2025,6,19),  -- Juneteenth
+        DATE(2025,7,4),   -- Independence Day
+        DATE(2025,9,1),   -- Labor Day
+        DATE(2025,10,13), -- Columbus Day
+        DATE(2025,11,11), -- Veterans Day
+        DATE(2025,11,27), -- Thanksgiving Day
+        DATE(2025,12,25)  -- Christmas Day
+    }, TRUE(),
+    FALSE()
+)
+
+
+
+
+
+
+
 WorkWeekGroup =
 VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
 
