@@ -1,3 +1,57 @@
+```python
+def fastest_dynamic_merge(d1, d2):
+    # Standardize all columns to lowercase
+    d1 = d1.copy()
+    d2 = d2.copy()
+    
+    # Map d1 columns (adjust these to your actual column names)
+    d1_cols = ['schema', 'table', 'sys', 'col']  # Replace with actual d1 column names
+    d2_cols = ['schema', 'table_label', 'sys', 'col']  # Replace with actual d2 column names
+    
+    for col in d1_cols:
+        d1[col] = d1[col].astype(str).str.lower()
+    
+    for col in d2_cols:
+        d2[col] = d2[col].astype(str).str.lower()
+    
+    # Create lookup list for O(1) access
+    d1_sys_list = d1[d1_cols[2]].tolist()  # sys column
+    
+    # Optimized matching using list comprehension
+    d2['matched_sys'] = [
+        next((sys_val for sys_val in d1_sys_list if sys_val in str(row)), None)
+        for row in d2[d2_cols[2]]  # sys column
+    ]
+    
+    # Filter and create keys
+    d2_matched = d2.dropna(subset=['matched_sys'])
+    
+    # Create primary keys using mapped columns
+    d1['pk'] = d1[d1_cols[0]] + '|' + d1[d1_cols[1]] + '|' + d1[d1_cols[2]] + '|' + d1[d1_cols[3]]
+    d2_matched['pk'] = d2_matched[d2_cols[0]] + '|' + d2_matched[d2_cols[1]] + '|' + d2_matched['matched_sys'] + '|' + d2_matched[d2_cols[3]]
+    
+    # Fast merge
+    result = d1.merge(d2_matched, on='pk', how='left', suffixes=('', '_d2'))
+    result['match_indicator'] = np.where(result[f'{d2_cols[2]}_d2'].notna(), 'Y', 'N')
+    
+    return result
+
+# Execute - just update the column name lists above
+result = fastest_dynamic_merge(d1, d2)
+```
+
+Just replace the column names in `d1_cols` and `d2_cols` lists with your actual column names. For example:
+- `d1_cols = ['schema_name', 'table_name', 'system', 'column_name']`
+- `d2_cols = ['schema_id', 'table_label', 'system_code', 'col_name']`
+
+
+
+
+
+
+
+
+
 Showkou = 
 VAR SelectedSSN = SELECTEDVALUE('Combined Analysis'[SoR Name])
 VAR RelatedTable = RELATED('map'[table])
