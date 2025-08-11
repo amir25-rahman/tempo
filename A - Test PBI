@@ -1,3 +1,21 @@
+import pandas as pd
+
+# Read the parquet file
+df = pd.read_parquet('your_file.parquet')
+
+
+import re
+result = df[df.apply(lambda row: bool(re.search(rf'\b{re.escape(row["prod_sys"])}\b', row['filter_label'])), axis=1)]
+
+
+# View results
+print(result)
+
+# result.to_parquet('output.parquet')
+#################################################################
+
+
+
 import os
 import re
 import datetime
