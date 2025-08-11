@@ -1,4 +1,45 @@
 ```python
+def fastest_dynamic_merge(df, df2):
+    # Standardize all columns to lowercase
+    df = df.copy()
+    df2 = df2.copy()
+    
+    for col in ['schema', 'table', 'sys', 'col']:
+        df[col] = df[col].astype(str).str.lower()
+        df2[col] = df2[col].astype(str).str.lower()
+    
+    # Create lookup list for O(1) access
+    df_sys_list = df['sys'].tolist()
+    
+    # Optimized matching using list comprehension
+    df2['matched_sys'] = [
+        next((sys_val for sys_val in df_sys_list if sys_val in str(row)), None)
+        for row in df2['sys']
+    ]
+    
+    # Filter and create keys
+    df2_matched = df2.dropna(subset=['matched_sys'])
+    
+    df['pk'] = df['schema'] + '|' + df['table'] + '|' + df['sys'] + '|' + df['col']
+    df2_matched['pk'] = df2_matched['schema'] + '|' + df2_matched['table'] + '|' + df2_matched['matched_sys'] + '|' + df2_matched['col']
+    
+    # Fast merge
+    result = df.merge(df2_matched, on='pk', how='left', suffixes=('', '_df2'))
+    result['match_indicator'] = np.where(result['sys_df2'].notna(), 'Y', 'N')
+    
+    return result
+
+# Execute
+result = fastest_dynamic_merge(df, df2)
+```
+
+
+
+
+
+
+
+```python
 import pandas as pd
 import numpy as np
 
