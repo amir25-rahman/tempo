@@ -1,3 +1,20 @@
+sys_values = set(df['sys'].str.lower())
+df2_sys_match = df2['search'].str.lower().where(lambda s: s.isin(sys_values), '')
+
+df2['pk_2'] = (
+    df2['schema'].str.lower() +
+    df2['table'].str.lower() +
+    df2_sys_match +
+    df2['col'].str.lower()
+)
+
+
+
+
+
+
+
+
 import pandas as pd
 
 # Read the parquet file
