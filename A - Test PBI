@@ -1,3 +1,37 @@
+WorkWeekGroup =
+VAR CurrentDate =
+    'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
+
+-- Check if current date is a workday (Mon–Fri and NOT holiday)
+VAR IsWorkday =
+    WEEKDAY ( CurrentDate, 2 ) <= 5 &&
+    NOT (
+        CONTAINS (
+            Holidays,
+            Holidays[Date], CurrentDate
+        )
+    )
+
+-- Get Monday of the current week
+VAR WeekStart =
+    CurrentDate - WEEKDAY ( CurrentDate, 2 ) + 1
+
+-- Get Friday of the current week
+VAR WeekEnd =
+    WeekStart + 4
+
+RETURN
+IF (
+    IsWorkday,
+    FORMAT ( WeekStart, "mmm dd" ) & " - " & FORMAT ( WeekEnd, "mmm dd" ),
+    BLANK()
+)
+
+
+
+
+
+
 ```python
 def fastest_dynamic_merge(df, df2):
     # Standardize all columns to lowercase
