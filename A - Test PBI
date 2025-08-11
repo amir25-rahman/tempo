@@ -1,3 +1,112 @@
+```python
+import pandas as pd
+import numpy as np
+
+def fast_dynamic_merge(df, df2):
+    # Get unique sys values from df for faster lookup
+    df_sys_set = set(df['sys'].astype(str))
+    
+    # Vectorized function to find matches
+    def find_match_vectorized(sys_series):
+        matches = []
+        for sys_val in sys_series:
+            sys_str = str(sys_val)
+            found_match = None
+            for df_sys in df_sys_set:
+                if df_sys in sys_str:
+                    found_match = df_sys
+                    break
+            matches.append(found_match)
+        return matches
+    
+    # Find matches for df2
+    df2 = df2.copy()
+    df2['matched_sys'] = find_match_vectorized(df2['sys'])
+    
+    # Filter only matched rows
+    df2_matched = df2[df2['matched_sys'].notna()].copy()
+    
+    # Create primary keys
+    df['primary_key'] = (df['schema'].astype(str) + '|' + 
+                         df['table'].astype(str) + '|' + 
+                         df['sys'].astype(str) + '|' + 
+                         df['col'].astype(str))
+    
+    df2_matched['primary_key'] = (df2_matched['schema'].astype(str) + '|' + 
+                                  df2_matched['table'].astype(str) + '|' + 
+                                  df2_matched['matched_sys'] + '|' + 
+                                  df2_matched['col'].astype(str))
+    
+    # Merge with indicator
+    merged = pd.merge(df, df2_matched, 
+                      on='primary_key', 
+                      how='left', 
+                      indicator=True,
+                      suffixes=('', '_df2'))
+    
+    # Create custom indicator: Y for inner, N for left_only
+    merged['match_indicator'] = np.where(merged['_merge'] == 'both', 'Y', 'N')
+    
+    # Drop the default indicator
+    merged = merged.drop('_merge', axis=1)
+    
+    return merged
+
+# Execute
+result = fast_dynamic_merge(df, df2)
+```
+
+**Even Faster Version (if you have many records):**
+
+```python
+def fastest_dynamic_merge(df, df2):
+    # Create lookup dictionary for O(1) access
+    df_sys_list = df['sys'].astype(str).tolist()
+    
+    # Optimized matching using list comprehension
+    df2 = df2.copy()
+    df2['matched_sys'] = [
+        next((sys_val for sys_val in df_sys_list if sys_val in str(row)), None)
+        for row in df2['sys']
+    ]
+    
+    # Filter and create keys
+    df2_matched = df2.dropna(subset=['matched_sys'])
+    
+    df['pk'] = df['schema'].astype(str) + '|' + df['table'].astype(str) + '|' + df['sys'].astype(str) + '|' + df['col'].astype(str)
+    df2_matched['pk'] = df2_matched['schema'].astype(str) + '|' + df2_matched['table'].astype(str) + '|' + df2_matched['matched_sys'] + '|' + df2_matched['col'].astype(str)
+    
+    # Fast merge
+    result = df.merge(df2_matched, on='pk', how='left', suffixes=('', '_df2'))
+    result['match_indicator'] = np.where(result['sys_df2'].notna(), 'Y', 'N')
+    
+    return result
+
+# Execute
+result = fastest_dynamic_merge(df, df2)
+```
+
+The result will have:
+- `match_indicator = 'Y'` for records that matched (inner join equivalent)  
+- `match_indicator = 'N'` for records from df that had no match (left only)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 sys_values = set(df['sys'].str.lower())
 df2_sys_match = df2['search'].str.lower().where(lambda s: s.isin(sys_values), '')
 
