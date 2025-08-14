@@ -1,3 +1,22 @@
+import pyarrow.fs as fs
+import pyarrow.parquet as pq
+import pandas as pd
+
+# Connect to HDFS
+hdfs = fs.HadoopFileSystem(host="namenode-host", port=8020)
+
+# Example: Read Parquet directly from HDFS into pandas
+table = pq.read_table("/user/data/myfile.parquet", filesystem=hdfs)
+df = table.to_pandas()
+
+print(df.head())
+
+
+
+
+
+
+
 WorkWeekGroup =
 VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
 VAR IsWorkday = WEEKDAY(CurrentDate, 2) <= 5
