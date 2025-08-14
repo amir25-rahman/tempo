@@ -1,3 +1,235 @@
+You're still getting the same compression error, which means the file is definitely corrupted at the gzip level. Since the file appears to actually be gzipped (based on the error), but the compression is damaged, let's try some advanced recovery techniques:
+
+## Solution 1: Try to extract whatever we can before corruption
+
+```python
+import gzip
+import struct
+
+def extract_partial_gzip(filename):
+    """Extract data from gzip file until we hit corruption"""
+    
+    with open(filename, 'rb') as f:
+        # Check gzip header
+        magic = f.read(2)
+        if magic != b'\x1f\x8b':
+            print("Not a gzip file")
+            return None
+            
+        method = f.read(1)[0]
+        flags = f.read(1)[0]
+        mtime = struct.unpack('<I', f.read(4))[0]
+        xfl = f.read(1)[0]
+        os = f.read(1)[0]
+        
+        print(f"Gzip header info:")
+        print(f"  Method: {method}")
+        print(f"  Flags: {flags}")
+        print(f"  Modified time: {mtime}")
+        
+        # Skip optional headers based on flags
+        if flags & 4:  # FEXTRA
+            xlen = struct.unpack('<H', f.read(2))[0]
+            f.read(xlen)
+        if flags & 8:  # FNAME
+            while f.read(1) != b'\x00': pass
+        if flags & 16:  # FCOMMENT
+            while f.read(1) != b'\x00': pass
+        if flags & 2:  # FHCRC
+            f.read(2)
+        
+        # Now try to decompress the actual data
+        compressed_data = f.read()
+        
+    print(f"Compressed data size: {len(compressed_data)} bytes")
+    
+    # Try to decompress in chunks
+    import zlib
+    decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+    
+    recovered_data = b""
+    chunk_size = 1024
+    
+    for i in range(0, len(compressed_data), chunk_size):
+        chunk = compressed_data[i:i+chunk_size]
+        try:
+            decompressed_chunk = decompressor.decompress(chunk)
+            recovered_data += decompressed_chunk
+            print(f"Processed chunk {i//chunk_size + 1}, recovered {len(recovered_data)} bytes so far")
+        except zlib.error as e:
+            print(f"Hit corruption at chunk {i//chunk_size + 1}: {e}")
+            break
+    
+    return recovered_data
+
+recovered = extract_partial_gzip('sys.csv.gz.20250814')
+if recovered:
+    print(f"\nRecovered {len(recovered)} bytes")
+    print(f"First 500 characters:\n{recovered[:500].decode('utf-8', errors='ignore')}")
+```
+
+## Solution 2: Use dd to extract good portions (Unix/Linux/Mac)
+
+```python
+import subprocess
+import os
+
+def extract_with_dd(filename, output_file='recovered_partial.gz'):
+    """Use dd to extract portions of the file"""
+    
+    file_size = os.path.getsize(filename)
+    print(f"Original file size: {file_size} bytes")
+    
+    # Try extracting first 75% of the file
+    extract_size = int(file_size * 0.75)
+    
+    try:
+        cmd = ['dd', f'if={filename}', f'of={output_file}', f'bs=1', f'count={extract_size}']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"Extracted first {extract_size} bytes to {output_file}")
+            
+            # Try to read the partial file
+            try:
+                import gzip
+                with gzip.open(output_file, 'rt') as f:
+                    content = f.read()
+                print(f"Successfully decompressed partial file: {len(content)} characters")
+                return content
+            except Exception as e:
+                print(f"Could not decompress partial file: {e}")
+                
+    except FileNotFoundError:
+        print("dd command not available (Windows?)")
+    except Exception as e:
+        print(f"dd extraction failed: {e}")
+    
+    return None
+
+# Only works on Unix-like systems
+if os.name != 'nt':  # Not Windows
+    partial_content = extract_with_dd('sys.csv.gz.20250814')
+```
+
+## Solution 3: Try Python gzip recovery
+
+```python
+import gzip
+import zlib
+
+def recover_gzip_python(filename):
+    """Try to recover data using Python's gzip with error handling"""
+    
+    try:
+        # Open file and try to read in very small chunks
+        with gzip.GzipFile(filename, 'rb') as gz:
+            recovered_chunks = []
+            chunk_size = 64  # Very small chunks
+            
+            while True:
+                try:
+                    chunk = gz.read(chunk_size)
+                    if not chunk:
+                        break
+                    recovered_chunks.append(chunk)
+                    print(f"Recovered chunk {len(recovered_chunks)}, total: {sum(len(c) for c in recovered_chunks)} bytes", end='\r')
+                    
+                except Exception as e:
+                    print(f"\nStopped at chunk {len(recovered_chunks)} due to: {e}")
+                    break
+            
+            if recovered_chunks:
+                total_data = b''.join(recovered_chunks)
+                print(f"\nTotal recovered: {len(total_data)} bytes")
+                return total_data
+                
+    except Exception as e:
+        print(f"Recovery failed: {e}")
+    
+    return None
+
+recovered_data = recover_gzip_python('sys.csv.gz.20250814')
+if recovered_data:
+    # Try to interpret as text
+    try:
+        text_data = recovered_data.decode('utf-8', errors='ignore')
+        print(f"Recovered text (first 1000 chars):\n{text_data[:1000]}")
+        
+        # Save to file
+        with open('recovered_data.txt', 'w') as f:
+            f.write(text_data)
+        print("Saved recovered data to 'recovered_data.txt'")
+        
+    except Exception as e:
+        print(f"Could not decode as text: {e}")
+```
+
+## Solution 4: Check if you have other copies or can regenerate
+
+```python
+import glob
+import os
+from datetime import datetime, timedelta
+
+def find_alternative_files(corrupted_file):
+    """Look for similar files that might be alternatives"""
+    
+    directory = os.path.dirname(corrupted_file) or '.'
+    
+    # Extract date from filename
+    import re
+    date_match = re.search(r'(\d{8})', corrupted_file)
+    if date_match:
+        file_date = date_match.group(1)
+        print(f"Corrupted file date: {file_date}")
+        
+        # Look for files from adjacent dates
+        base_pattern = corrupted_file.replace(file_date, '*')
+        similar_files = glob.glob(base_pattern)
+        
+        print(f"Similar files found:")
+        for f in sorted(similar_files):
+            size = os.path.getsize(f)
+            mtime = datetime.fromtimestamp(os.path.getmtime(f))
+            status = "CORRUPTED" if f == corrupted_file else "OK"
+            print(f"  {f} - {size:,} bytes - {mtime} - {status}")
+    
+    # Look for any sys.* files
+    sys_files = glob.glob(os.path.join(directory, 'sys.*'))
+    print(f"\nAll sys.* files:")
+    for f in sorted(sys_files)[:20]:  # Limit to 20 files
+        size = os.path.getsize(f)
+        print(f"  {f} - {size:,} bytes")
+
+find_alternative_files('sys.csv.gz.20250814')
+```
+
+## Immediate steps:
+
+1. **Try Solution 1** first - it might recover some usable data
+2. **Check Solution 4** to see if there are similar files from other dates
+3. If you're on Linux/Mac, **try Solution 2** with the `dd` command
+
+## Questions to consider:
+
+- Is this a daily file? Can you get yesterday's or today's version?
+- Is this generated by a system process that you can re-run?
+- Do you have backups of this data?
+- What type of data should this file contain? (logs, database export, etc.)
+
+The file is definitely corrupted at the gzip compression level, so recovery options are limited. Your best bet might be to find an alternative source for the same data.​​​​​​​​​​​​​​​​
+
+
+
+
+
+
+
+
+3$:!:$;):7:&:&:$;!;!;!:$:
+
+
 This error indicates that the file is not actually a text-based gzipped CSV file, or there's an encoding issue. Here are several solutions to try:
 
 ## Solution 1: Use binary mode first, then decode
