@@ -1,3 +1,122 @@
+This error indicates that the file is not actually a text-based gzipped CSV file, or there's an encoding issue. Here are several solutions to try:
+
+## Solution 1: Use binary mode first, then decode
+
+```python
+import gzip
+import pandas as pd
+
+# Try reading in binary mode first
+with gzip.open('file.csv.gz', 'rb') as f:
+    df = pd.read_csv(f)
+```
+
+## Solution 2: Try different encodings
+
+```python
+import gzip
+import pandas as pd
+
+# Try common encodings
+encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+
+for encoding in encodings:
+    try:
+        with gzip.open('file.csv.gz', 'rt', encoding=encoding) as f:
+            df = pd.read_csv(f)
+        print(f"Success with encoding: {encoding}")
+        break
+    except UnicodeDecodeError:
+        print(f"Failed with encoding: {encoding}")
+        continue
+```
+
+## Solution 3: Check if file is actually gzipped
+
+```python
+import gzip
+import pandas as pd
+
+# First, check if the file is actually gzipped
+try:
+    with gzip.open('file.csv.gz', 'rt', encoding='utf-8') as f:
+        # Try to read just the first line
+        first_line = f.readline()
+        print("File is properly gzipped")
+except:
+    print("File might not be gzipped or has encoding issues")
+    # Try reading as regular CSV
+    df = pd.read_csv('file.csv.gz')
+```
+
+## Solution 4: Use error handling
+
+```python
+import gzip
+import pandas as pd
+
+with gzip.open('file.csv.gz', 'rt', encoding='utf-8', errors='replace') as f:
+    df = pd.read_csv(f)
+```
+
+## Solution 5: Detect encoding automatically
+
+```python
+import gzip
+import chardet
+import pandas as pd
+
+# Read a sample to detect encoding
+with gzip.open('file.csv.gz', 'rb') as f:
+    sample = f.read(10000)  # Read first 10KB
+    encoding = chardet.detect(sample)['encoding']
+    print(f"Detected encoding: {encoding}")
+
+# Now read with detected encoding
+with gzip.open('file.csv.gz', 'rt', encoding=encoding) as f:
+    df = pd.read_csv(f)
+```
+
+## Solution 6: Verify file integrity
+
+```python
+import gzip
+
+# Check if file can be opened at all
+try:
+    with gzip.open('file.csv.gz', 'rb') as f:
+        # Read first few bytes
+        header = f.read(10)
+        print("File header:", header)
+except Exception as e:
+    print(f"Error opening file: {e}")
+```
+
+## Common causes of this error:
+
+1. **File corruption**: The .gz file might be corrupted
+2. **Wrong file type**: The file might not actually be gzipped
+3. **Encoding mismatch**: The file uses a different encoding than UTF-8
+4. **Incomplete download**: If downloaded, the file might be incomplete
+
+Try these solutions in order. The binary mode approach (Solution 1) often works best, as pandas can handle the decompression and encoding detection internally.​​​​​​​​​​​​​​​​
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import pyarrow.fs as fs
 import pyarrow.parquet as pq
 import pandas as pd
