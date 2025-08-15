@@ -1,0 +1,747 @@
+import os
+import re
+import datetime
+from glob import glob
+from functools import lru_cache
+from typing import List, Dict, Any, Optional
+
+import pandas as pd
+import pyarrow.parquet as pq
+
+
+# ---------------- Helper Functions ---------------- #
+@lru_cache(maxsize=1)
+def get_special_char_pattern():
+    """Cache compiled regex pattern for special characters."""
+    return re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+
+
+def get_special_char_count_vectorized(series: pd.Series) -> int:
+    try:
+        if series.dtype != object or series.empty:
+            return 0
+        
+        str_array = series.dropna().astype(str)
+        if str_array.empty:
+            return 0
+        
+        pattern = get_special_char_pattern()
+        return sum(len(pattern.findall(text)) for text in str_array)
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=100)
+def get_null_bucket(null_pct: float) -> str:
+    """Bucketize null percentage into predefined ranges."""
+    if null_pct == 0:
+        return '0%'
+    elif null_pct < 0.25:
+        return '0-24%'
+    elif null_pct < 0.50:
+        return '25-49%'
+    elif null_pct < 0.75:
+        return '50-74%'
+    elif null_pct < 1:
+        return '75-99%'
+    elif null_pct == 1:
+        return '100%'
+    return "Unknown"
+
+
+def safe_convert_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert data types to reduce memory usage."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Convert to categorical if it saves memory and has reasonable cardinality
+                unique_ratio = df[col].nunique() / len(df)
+                if unique_ratio < 0.3 and df[col].nunique() < 10000:
+                    try:
+                        df[col] = df[col].astype('category')
+                    except:
+                        pass
+        return df
+    except Exception:
+        return df
+
+
+def get_top_duplicates_safe(series: pd.Series, top_n: int = 5) -> str:
+    """Extract top duplicate values with error handling."""
+    try:
+        # Get value counts for the full series (not sampled)
+        counts = series.value_counts(dropna=True)
+        duplicated_counts = counts[counts > 1]
+        
+        if duplicated_counts.empty:
+            return "None"
+        
+        if len(duplicated_counts) > top_n:
+            top_dups = duplicated_counts.head(top_n)
+            remaining = len(duplicated_counts) - top_n
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in top_dups.items()] + [f"...+{remaining}"]
+        else:
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in duplicated_counts.items()]
+        
+        return ", ".join(dup_list)
+    except Exception:
+        return "Error calculating duplicates"
+
+
+def process_single_column(col_name: str, series: pd.Series, total_rows: int, sys_name: str, top_n: int = 5) -> Optional[Dict[str, Any]]:
+    try:
+        null_count = int(series.isnull().sum())
+        null_pct = null_count / total_rows if total_rows > 0 else 0
+        
+        try:
+            unique_count = int(series.nunique(dropna=True))
+        except:
+            unique_count = 0
+            
+        unique_pct = unique_count / total_rows if total_rows > 0 else 0
+        duplicated_pct = (total_rows - unique_count) / total_rows if total_rows > 0 else 0
+        
+        special_char_count = get_special_char_count_vectorized(series)
+        
+        try:
+            mode_values = series.mode()
+            most_freq_val = mode_values.iloc[0] if not mode_values.empty else None
+            if most_freq_val is not None:
+                most_freq_val = str(most_freq_val)[:100]
+        except:
+            most_freq_val = "Error calculating mode"
+        
+        dup_str = get_top_duplicates_safe(series, top_n)
+        
+        return {
+            'column': col_name,
+            'data_type': str(series.dtype),
+            'null_count': null_count,
+            'null_pct': round(null_pct * 100, 2),
+            'null_bucket': get_null_bucket(null_pct),
+            'unique_pct': round(unique_pct * 100, 4),
+            'duplicated_pct': round(duplicated_pct * 100, 4),
+            'special_char_count': special_char_count,
+            'most_frequent_value': most_freq_val,
+            'total_rows': total_rows,
+            'prod_sys': str(sys_name),
+            'Dups_freq_5_max': dup_str
+        }
+        
+    except Exception:
+        return None
+
+
+def read_file(file_path: str) -> pd.DataFrame:
+    """Read file based on extension (parquet, csv, excel)."""
+    file_ext = os.path.splitext(file_path.lower())[1]
+    
+    if file_ext == '.parquet':
+        try:
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        except Exception:
+            try:
+                table_obj = pq.read_table(file_path)
+                df = table_obj.to_pandas()
+                del table_obj
+            except Exception:
+                raise Exception("Failed to read parquet file")
+                
+    elif file_ext == '.csv':
+        try:
+            # Try different encodings and separators
+            encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+            separators = [',', ';', '\t', '|']
+            
+            df = None
+            for encoding in encodings:
+                for sep in separators:
+                    try:
+                        df = pd.read_csv(file_path, encoding=encoding, sep=sep, low_memory=False)
+                        # Check if we got reasonable columns (not just one column with separators)
+                        if len(df.columns) > 1 or len(df) < 2:
+                            break
+                    except Exception:
+                        continue
+                if df is not None and len(df.columns) > 1:
+                    break
+            
+            if df is None:
+                # Fallback to default
+                df = pd.read_csv(file_path, low_memory=False)
+                
+        except Exception:
+            raise Exception("Failed to read CSV file")
+            
+    elif file_ext in ['.xlsx', '.xls']:
+        try:
+            # Try different sheet names
+            sheet_names = ['Sheet1', 'Data', 0]  # 0 is the first sheet
+            
+            df = None
+            for sheet in sheet_names:
+                try:
+                    df = pd.read_excel(file_path, sheet_name=sheet)
+                    break
+                except:
+                    continue
+            
+            if df is None:
+                # If no sheet worked, try reading without specifying sheet
+                df = pd.read_excel(file_path)
+                
+        except Exception:
+            raise Exception("Failed to read Excel file")
+    else:
+        raise Exception(f"Unsupported file format: {file_ext}. Supported formats: .parquet, .csv, .xlsx, .xls")
+    
+    return df
+
+
+def construct_file_path(schema: str, table: str, sys_name: str, date: str, file_extension: str = '.parquet') -> str:
+    """Construct the file path based on the mapping."""
+    schema_parts = schema.split('_')
+    if len(schema_parts) < 4:
+        raise ValueError(f"Schema must have at least 4 parts separated by underscores: {schema}")
+    
+    # First 3 parts are single words, remaining parts form the 4th directory
+    part1 = schema_parts[0]
+    part2 = schema_parts[1] 
+    part3 = schema_parts[2]
+    part4 = '_'.join(schema_parts[3:])  # Join remaining parts with underscore
+    
+    # Update the path construction to support different file extensions
+    filename = f"0000_0{file_extension}"
+    path = f"C:/Users/NULL/Desktop/pdf codes/dataL/{part1}/{part2}/{part3}/{part4}/{schema}/{table}/{sys_name}/{filename}"
+    return path
+
+
+def analyze_file_from_path(file_path: str, schema: str, table: str, sys_name: str, top_n: int = 5) -> List[Dict[str, Any]]:
+    """Analyze file from constructed path."""
+    results = []
+    
+    try:
+        # Check if file exists
+        if not os.path.exists(file_path):
+            raise Exception(f"File not found: {file_path}")
+        
+        # Read the file
+        df = read_file(file_path)
+        
+        if df.empty:
+            raise Exception("DataFrame is empty")
+        
+        # Apply memory optimization
+        df = safe_convert_dtypes(df)
+        
+        # Process all columns for the entire dataset (no grouping)
+        total_rows = len(df)
+        
+        for col in df.columns:
+            result = process_single_column(col, df[col], total_rows, sys_name, top_n)
+            if result is not None:
+                result.update({
+                    'schema': schema,
+                    'table': table
+                })
+                results.append(result)
+        
+    except Exception as e:
+        raise Exception(str(e))
+    
+    return results
+
+
+def convert_datetime_objects_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime objects to strings for compatibility."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Check if column contains datetime objects using full sample
+                sample_data = df[col].dropna()
+                if not sample_data.empty:
+                    # Check a reasonable sample size for datetime detection
+                    check_size = min(1000, len(sample_data))
+                    has_datetime = sample_data.head(check_size).apply(
+                        lambda x: isinstance(x, (datetime.date, datetime.time, datetime.datetime))
+                    ).any()
+                    if has_datetime:
+                        df[col] = df[col].astype(str)
+        return df
+    except Exception:
+        return df
+
+
+def load_mapping_excel(excel_path: str) -> pd.DataFrame:
+    """Load the mapping Excel file."""
+    try:
+        # Try different common sheet names
+        sheet_names = ['Sheet1', 'Mapping', 'Data', 0]  # 0 is the first sheet
+        
+        for sheet in sheet_names:
+            try:
+                df = pd.read_excel(excel_path, sheet_name=sheet)
+                break
+            except:
+                continue
+        else:
+            # If no sheet worked, try reading without specifying sheet
+            df = pd.read_excel(excel_path)
+        
+        # Clean column names (remove spaces, make lowercase)
+        df.columns = df.columns.str.strip().str.lower()
+        
+        # Check for required columns
+        required_cols = ['schema', 'table', 'sys_name']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}. Found columns: {list(df.columns)}")
+        
+        # Remove any rows with missing values in required columns
+        df = df.dropna(subset=required_cols)
+        
+        # Add file_extension column if it doesn't exist (default to .parquet)
+        if 'file_extension' not in df.columns:
+            df['file_extension'] = '.parquet'
+        
+        return df[required_cols + ['file_extension'] if 'file_extension' in df.columns else required_cols]
+        
+    except Exception as e:
+        raise Exception(f"Error loading Excel file: {str(e)}")
+
+
+# ---------------- Main Script ---------------- #
+def main():
+    # Configuration
+    excel_mapping_path = r"C:\Users\NULL\Desktop\pdf codes\DD\mapping.xlsx"  # Update this path
+    date = "2024-01-15"  # Update this date or make it dynamic
+    output_folder = r"C:\Users\NULL\Desktop\pdf codes\DD"
+    
+    try:
+        # Load mapping from Excel
+        print("Loading mapping from Excel file...")
+        mapping_df = load_mapping_excel(excel_mapping_path)
+        print(f"Loaded {len(mapping_df)} mappings from Excel file")
+        
+    except Exception as e:
+        print(f"Error loading Excel mapping: {e}")
+        return
+    
+    all_stats = []
+    failed_files = []
+    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    # Process each mapping
+    for idx, row in mapping_df.iterrows():
+        schema = row['schema']
+        table = row['table'] 
+        sys_name = row['sys_name']
+        file_extension = row.get('file_extension', '.parquet')  # Default to parquet if not specified
+        
+        try:
+            # Construct the file path
+            file_path = construct_file_path(schema, table, sys_name, date, file_extension)
+            print(f"Processing: {schema}.{table} for system {sys_name} (format: {file_extension})")
+            print(f"Path: {file_path}")
+            
+            # Analyze the file
+            stats = analyze_file_from_path(file_path, schema, table, sys_name)
+            if stats:
+                all_stats.extend(stats)
+                print(f" Successfully processed {len(stats)} columns")
+            else:
+                print(f"  ⚠ No data found")
+                
+        except Exception as e:
+            error_msg = str(e)
+            print(f"  ✗ Failed: {error_msg}")
+            failed_files.append({
+                'schema': schema,
+                'table': table,
+                'sys_name': sys_name,
+                'file_path': file_path if 'file_path' in locals() else 'Path construction failed',
+                'error': error_msg,
+                'date': today_date
+            })
+            continue
+
+    # Save failed files report
+    if failed_files:
+        failed_df = pd.DataFrame(failed_files)
+        failed_output = os.path.join(output_folder, f'failed_files_{today_date}.parquet')
+        failed_df.to_parquet(failed_output, index=False, engine='pyarrow')
+        print(f"\nFailed files report saved: {failed_output}")
+        print(f"Total failed: {len(failed_files)}")
+
+    # Save successful results
+    if not all_stats:
+        print("No data to process!")
+        return
+    
+    try:
+        df_stats = pd.DataFrame(all_stats)
+        df_stats = df_stats.sort_values(by=['prod_sys', 'schema', 'table'])
+        df_stats = convert_datetime_objects_safe(df_stats)
+        df_stats["most_frequent_value"] = df_stats["most_frequent_value"].astype(str)
+
+        output_file = os.path.join(output_folder, f'file_stats_report_{today_date}.parquet')
+        df_stats.to_parquet(output_file, index=False, engine='pyarrow')
+        
+        print(f"\nAnalysis complete!")
+        print(f"Total records processed: {len(all_stats)}")
+        print(f"Report saved: {output_file}")
+        
+    except Exception as e:
+        print(f"Error creating final report: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+#####################################################
+import os
+import re
+import datetime
+from glob import glob
+from functools import lru_cache
+from typing import List, Dict, Any, Optional
+
+import pandas as pd
+import pyarrow.parquet as pq
+
+
+# ---------------- Helper Functions ---------------- #
+@lru_cache(maxsize=1)
+def get_special_char_pattern():
+    """Cache compiled regex pattern for special characters."""
+    return re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
+
+
+def get_special_char_count_vectorized(series: pd.Series) -> int:
+    try:
+        if series.dtype != object or series.empty:
+            return 0
+        
+        str_array = series.dropna().astype(str)
+        if str_array.empty:
+            return 0
+        
+        pattern = get_special_char_pattern()
+        return sum(len(pattern.findall(text)) for text in str_array)
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=100)
+def get_null_bucket(null_pct: float) -> str:
+    """Bucketize null percentage into predefined ranges."""
+    if null_pct == 0:
+        return '0%'
+    elif null_pct < 0.25:
+        return '0-24%'
+    elif null_pct < 0.50:
+        return '25-49%'
+    elif null_pct < 0.75:
+        return '50-74%'
+    elif null_pct < 1:
+        return '75-99%'
+    elif null_pct == 1:
+        return '100%'
+    return "Unknown"
+
+
+def safe_convert_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert data types to reduce memory usage."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Convert to categorical if it saves memory and has reasonable cardinality
+                unique_ratio = df[col].nunique() / len(df)
+                if unique_ratio < 0.3 and df[col].nunique() < 10000:
+                    try:
+                        df[col] = df[col].astype('category')
+                    except:
+                        pass
+        return df
+    except Exception:
+        return df
+
+
+def get_top_duplicates_safe(series: pd.Series, top_n: int = 5) -> str:
+    """Extract top duplicate values with error handling."""
+    try:
+        # Get value counts for the full series (not sampled)
+        counts = series.value_counts(dropna=True)
+        duplicated_counts = counts[counts > 1]
+        
+        if duplicated_counts.empty:
+            return "None"
+        
+        if len(duplicated_counts) > top_n:
+            top_dups = duplicated_counts.head(top_n)
+            remaining = len(duplicated_counts) - top_n
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in top_dups.items()] + [f"...+{remaining}"]
+        else:
+            dup_list = [f"{str(v)[:50]}({c})" for v, c in duplicated_counts.items()]
+        
+        return ", ".join(dup_list)
+    except Exception:
+        return "Error calculating duplicates"
+
+
+def process_single_column(col_name: str, series: pd.Series, total_rows: int, prod_sys: str, top_n: int = 5) -> Optional[Dict[str, Any]]:
+    try:
+        if col_name == "prod_sys":
+            return None
+        
+        null_count = int(series.isnull().sum())
+        null_pct = null_count / total_rows if total_rows > 0 else 0
+        
+        try:
+            unique_count = int(series.nunique(dropna=True))
+        except:
+            unique_count = 0
+            
+        unique_pct = unique_count / total_rows if total_rows > 0 else 0
+        duplicated_pct = (total_rows - unique_count) / total_rows if total_rows > 0 else 0
+        
+        special_char_count = get_special_char_count_vectorized(series)
+        
+        try:
+            mode_values = series.mode()
+            most_freq_val = mode_values.iloc[0] if not mode_values.empty else None
+            if most_freq_val is not None:
+                most_freq_val = str(most_freq_val)[:100]
+        except:
+            most_freq_val = "Error calculating mode"
+        
+        dup_str = get_top_duplicates_safe(series, top_n)
+        
+        return {
+            'column': col_name,
+            'data_type': str(series.dtype),
+            'null_count': null_count,
+            'null_pct': round(null_pct * 100, 2),
+            'null_bucket': get_null_bucket(null_pct),
+            'unique_pct': round(unique_pct * 100, 4),
+            'duplicated_pct': round(duplicated_pct * 100, 4),
+            'special_char_count': special_char_count,
+            'most_frequent_value': most_freq_val,
+            'total_rows': total_rows,
+            'prod_sys': str(prod_sys),
+            'Dups_freq_5_max': dup_str
+        }
+        
+    except Exception:
+        return None
+    
+def construct_parquet_path(schema: str, table: str, sys_name: str, date: str) -> str:
+    """Construct the parquet file path based on the mapping."""
+    schema_parts = schema.split('_')
+    if len(schema_parts) < 4:
+        raise ValueError(f"Schema must have at least 4 parts separated by underscores: {schema}")
+    
+    # First 3 parts are single words, remaining parts form the 4th directory
+    part1 = schema_parts[0]
+    part2 = schema_parts[1] 
+    part3 = schema_parts[2]
+    part4 = '_'.join(schema_parts[3:])  # Join remaining parts with underscore
+    
+    #path = f"/dataL/{part1}/{part2}/{part3}/{part4}/{schema}.db/{table}/as_of_dt={date}/pro_sys={sys_name}/0000_0"
+    path = f"C:/Users/NULL/Desktop/pdf codes/dataL/{part1}/{part2}/{part3}/{part4}/{schema}/{table}/{sys_name}/0000_0.parquet"
+    return path
+
+def analyze_parquet_from_path(file_path: str, schema: str, table: str, top_n: int = 5) -> List[Dict[str, Any]]:
+    """Analyze parquet file from constructed path."""
+    results = []
+    
+    try:
+        # Check if file exists
+        if not os.path.exists(file_path):
+            raise Exception(f"File not found: {file_path}")
+        
+        try:
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        except Exception:
+            try:
+                table_obj = pq.read_table(file_path)
+                df = table_obj.to_pandas()
+                del table_obj
+            except Exception:
+                raise Exception("Failed to read parquet file")
+        
+        if df.empty:
+            raise Exception("DataFrame is empty")
+        
+        if 'prod_sys' not in df.columns:
+            raise Exception("prod_sys column not found")
+
+        df = safe_convert_dtypes(df)
+        
+        try:
+            grouped = df.groupby('prod_sys', observed=True)
+        except:
+            raise Exception("Failed to group by prod_sys")
+        
+        for prod_sys, group_df in grouped:
+            total_rows = len(group_df)
+            if total_rows == 0:
+                continue
+            
+            for col in group_df.columns:
+                result = process_single_column(col, group_df[col], total_rows, prod_sys, top_n)
+                if result is not None:
+                    result.update({
+                        'schema': schema,
+                        'table': table
+                    })
+                    results.append(result)
+        
+    except Exception as e:
+        raise Exception(str(e))
+    
+    return results
+
+
+def convert_datetime_objects_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime objects to strings for compatibility."""
+    try:
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Check if column contains datetime objects using full sample
+                sample_data = df[col].dropna()
+                if not sample_data.empty:
+                    # Check a reasonable sample size for datetime detection
+                    check_size = min(1000, len(sample_data))
+                    has_datetime = sample_data.head(check_size).apply(
+                        lambda x: isinstance(x, (datetime.date, datetime.time, datetime.datetime))
+                    ).any()
+                    if has_datetime:
+                        df[col] = df[col].astype(str)
+        return df
+    except Exception:
+        return df
+
+def load_mapping_excel(excel_path: str) -> pd.DataFrame:
+    """Load the mapping Excel file."""
+    try:
+        # Try different common sheet names
+        sheet_names = ['Sheet1', 'Mapping', 'Data', 0]  # 0 is the first sheet
+        
+        for sheet in sheet_names:
+            try:
+                df = pd.read_excel(excel_path, sheet_name=sheet)
+                break
+            except:
+                continue
+        else:
+            # If no sheet worked, try reading without specifying sheet
+            df = pd.read_excel(excel_path)
+        
+        # Clean column names (remove spaces, make lowercase)
+        df.columns = df.columns.str.strip().str.lower()
+        
+        # Check for required columns
+        required_cols = ['schema', 'table', 'sys_name']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}. Found columns: {list(df.columns)}")
+        
+        # Remove any rows with missing values in required columns
+        df = df.dropna(subset=required_cols)
+        
+        return df[required_cols]
+        
+    except Exception as e:
+        raise Exception(f"Error loading Excel file: {str(e)}")
+
+
+# ---------------- Main Script ---------------- #
+def main():
+    # Configuration
+    excel_mapping_path = r"C:\Users\NULL\Desktop\pdf codes\DD\mapping.xlsx"  # Update this path
+    date = "2024-01-15"  # Update this date or make it dynamic
+    output_folder = r"C:\Users\NULL\Desktop\pdf codes\DD"
+    
+    try:
+        # Load mapping from Excel
+        print("Loading mapping from Excel file...")
+        mapping_df = load_mapping_excel(excel_mapping_path)
+        print(f"Loaded {len(mapping_df)} mappings from Excel file")
+        
+    except Exception as e:
+        print(f"Error loading Excel mapping: {e}")
+        return
+    
+    all_stats = []
+    failed_files = []
+    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    # Process each mapping
+    for idx, row in mapping_df.iterrows():
+        schema = row['schema']
+        table = row['table'] 
+        sys_name = row['sys_name']
+        
+        try:
+            # Construct the parquet file path
+            file_path = construct_parquet_path(schema, table, sys_name, date)
+            print(f"Processing: {schema}.{table} for system {sys_name}")
+            print(f"Path: {file_path}")
+            
+            # Analyze the parquet file
+            stats = analyze_parquet_from_path(file_path, schema, table)
+            if stats:
+                all_stats.extend(stats)
+                print(f" Successfully processed {len(stats)} columns")
+            else:
+                print(f"  ⚠ No data found")
+                
+        except Exception as e:
+            error_msg = str(e)
+            print(f"  ✗ Failed: {error_msg}")
+            failed_files.append({
+                'schema': schema,
+                'table': table,
+                'sys_name': sys_name,
+                'file_path': file_path if 'file_path' in locals() else 'Path construction failed',
+                'error': error_msg,
+                'date': today_date
+            })
+            continue
+
+    # Save failed files report
+    if failed_files:
+        failed_df = pd.DataFrame(failed_files)
+        failed_output = os.path.join(output_folder, f'failed_files_{today_date}.parquet')
+        failed_df.to_parquet(failed_output, index=False, engine='pyarrow')
+        print(f"\nFailed files report saved: {failed_output}")
+        print(f"Total failed: {len(failed_files)}")
+
+    # Save successful results
+    if not all_stats:
+        print("No data to process!")
+        return
+    
+    try:
+        df_stats = pd.DataFrame(all_stats)
+        df_stats = df_stats.sort_values(by=['prod_sys', 'schema', 'table'])
+        df_stats = convert_datetime_objects_safe(df_stats)
+        df_stats["most_frequent_value"] = df_stats["most_frequent_value"].astype(str)
+
+        output_file = os.path.join(output_folder, f'parquet_stats_report_{today_date}.parquet')
+        df_stats.to_parquet(output_file, index=False, engine='pyarrow')
+        
+        print(f"\nAnalysis complete!")
+        print(f"Total records processed: {len(all_stats)}")
+        print(f"Report saved: {output_file}")
+        
+    except Exception as e:
+        print(f"Error creating final report: {e}")
+
+
+if __name__ == "__main__":
+    main()
