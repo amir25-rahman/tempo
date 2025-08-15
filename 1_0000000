@@ -1,3 +1,228 @@
+import gzip
+import tarfile
+import pandas as pd
+import os
+from pathlib import Path
+
+def extract_gz_to_parquet(gz_file_path, output_dir="parquet_files"):
+    """
+    Extract files from a GZ archive and convert supported formats to Parquet
+    
+    Args:
+        gz_file_path (str): Path to the GZ file
+        output_dir (str): Directory to save Parquet files
+    """
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Determine if it's a tar.gz or just .gz file
+    if gz_file_path.endswith('.tar.gz') or gz_file_path.endswith('.tgz'):
+        # Handle tar.gz archives (multiple files)
+        extract_tar_gz_to_parquet(gz_file_path, output_dir)
+    else:
+        # Handle single .gz file
+        extract_single_gz_to_parquet(gz_file_path, output_dir)
+
+def extract_tar_gz_to_parquet(tar_gz_path, output_dir):
+    """Extract files from tar.gz and convert to Parquet"""
+    
+    print(f"Opening tar.gz file: {tar_gz_path}")
+    
+    with tarfile.open(tar_gz_path, 'r:gz') as tar:
+        # First, list all members to see what's in the archive
+        all_members = tar.getmembers()
+        print(f"Found {len(all_members)} total items in archive:")
+        
+        for member in all_members:
+            print(f"  - {member.name} ({'file' if member.isfile() else 'directory'})")
+        
+        # Process each file
+        for member in tar.getmembers():
+            if member.isfile():
+                print(f"Processing file: {member.name}")
+                
+                # Extract file content
+                extracted_file = tar.extractfile(member)
+                if extracted_file:
+                    file_content = extracted_file.read()
+                    
+                    # Get filename without path
+                    filename = os.path.basename(member.name)
+                    print(f"  -> Extracted as: {filename} (size: {len(file_content)} bytes)")
+                    
+                    # Convert to Parquet based on file type
+                    convert_to_parquet(file_content, filename, output_dir)
+                else:
+                    print(f"  -> Could not extract content from {member.name}")
+            else:
+                print(f"Skipping directory: {member.name}")
+
+def extract_single_gz_to_parquet(gz_path, output_dir):
+    """Extract single .gz file and convert to Parquet"""
+    
+    with gzip.open(gz_path, 'rb') as gz_file:
+        file_content = gz_file.read()
+        
+        # Get original filename (remove .gz extension)
+        original_filename = os.path.basename(gz_path).replace('.gz', '')
+        
+        # Convert to Parquet
+        convert_to_parquet(file_content, original_filename, output_dir)
+
+def convert_to_parquet(file_content, filename, output_dir):
+    """
+    Convert file content to Parquet format based on file type
+    
+    Args:
+        file_content (bytes): Raw file content
+        filename (str): Original filename
+        output_dir (str): Output directory
+    """
+    
+    print(f"Converting {filename} to Parquet...")
+    
+    try:
+        # Get file extension
+        file_ext = Path(filename).suffix.lower()
+        base_name = Path(filename).stem
+        
+        # Convert based on file type
+        if file_ext in ['.csv']:
+            # Handle CSV files
+            df = pd.read_csv(pd.io.common.BytesIO(file_content))
+            output_path = os.path.join(output_dir, f"{base_name}.parquet")
+            
+            # Handle filename conflicts
+            counter = 1
+            original_output_path = output_path
+            while os.path.exists(output_path):
+                base_name_with_counter = f"{base_name}_{counter}"
+                output_path = os.path.join(output_dir, f"{base_name_with_counter}.parquet")
+                counter += 1
+                
+            df.to_parquet(output_path, index=False)
+            print(f"  ✓ Successfully converted {filename} to {output_path}")
+            print(f"    Shape: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+        elif file_ext in ['.json', '.jsonl']:
+            # Handle JSON files
+            if file_ext == '.jsonl':
+                # JSON Lines format
+                df = pd.read_json(pd.io.common.BytesIO(file_content), lines=True)
+            else:
+                # Regular JSON
+                df = pd.read_json(pd.io.common.BytesIO(file_content))
+            
+            output_path = os.path.join(output_dir, f"{base_name}.parquet")
+            
+            # Handle filename conflicts
+            counter = 1
+            while os.path.exists(output_path):
+                base_name_with_counter = f"{base_name}_{counter}"
+                output_path = os.path.join(output_dir, f"{base_name_with_counter}.parquet")
+                counter += 1
+                
+            df.to_parquet(output_path, index=False)
+            print(f"  ✓ Successfully converted {filename} to {output_path}")
+            print(f"    Shape: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+        elif file_ext in ['.xlsx', '.xls']:
+            # Handle Excel files
+            df = pd.read_excel(pd.io.common.BytesIO(file_content))
+            output_path = os.path.join(output_dir, f"{base_name}.parquet")
+            
+            # Handle filename conflicts
+            counter = 1
+            while os.path.exists(output_path):
+                base_name_with_counter = f"{base_name}_{counter}"
+                output_path = os.path.join(output_dir, f"{base_name_with_counter}.parquet")
+                counter += 1
+                
+            df.to_parquet(output_path, index=False)
+            print(f"  ✓ Successfully converted {filename} to {output_path}")
+            print(f"    Shape: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+        elif file_ext in ['.tsv']:
+            # Handle TSV files
+            df = pd.read_csv(pd.io.common.BytesIO(file_content), sep='\t')
+            output_path = os.path.join(output_dir, f"{base_name}.parquet")
+            
+            # Handle filename conflicts
+            counter = 1
+            while os.path.exists(output_path):
+                base_name_with_counter = f"{base_name}_{counter}"
+                output_path = os.path.join(output_dir, f"{base_name_with_counter}.parquet")
+                counter += 1
+                
+            df.to_parquet(output_path, index=False)
+            print(f"  ✓ Successfully converted {filename} to {output_path}")
+            print(f"    Shape: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+        elif file_ext in ['.parquet']:
+            # Already Parquet, just extract
+            output_path = os.path.join(output_dir, filename)
+            
+            # Handle filename conflicts
+            counter = 1
+            while os.path.exists(output_path):
+                name_parts = filename.rsplit('.', 1)
+                new_filename = f"{name_parts[0]}_{counter}.{name_parts[1]}"
+                output_path = os.path.join(output_dir, new_filename)
+                counter += 1
+                
+            with open(output_path, 'wb') as f:
+                f.write(file_content)
+            print(f"  ✓ Successfully extracted {filename} to {output_path}")
+            
+        else:
+            # For unsupported formats, try to read as text and create a simple DataFrame
+            try:
+                text_content = file_content.decode('utf-8')
+                df = pd.DataFrame({'content': [text_content]})
+                output_path = os.path.join(output_dir, f"{base_name}.parquet")
+                
+                # Handle filename conflicts
+                counter = 1
+                while os.path.exists(output_path):
+                    base_name_with_counter = f"{base_name}_{counter}"
+                    output_path = os.path.join(output_dir, f"{base_name_with_counter}.parquet")
+                    counter += 1
+                    
+                df.to_parquet(output_path, index=False)
+                print(f"  ✓ Successfully converted {filename} (as text) to {output_path}")
+            except Exception as text_error:
+                print(f"  ✗ Cannot convert {filename} - unsupported format: {str(text_error)}")
+                
+    except Exception as e:
+        print(f"  ✗ Error processing {filename}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+# Example usage
+if __name__ == "__main__":
+    # Example 1: Extract from tar.gz file
+    # extract_gz_to_parquet("data.tar.gz", "output_parquet")
+    
+    # Example 2: Extract from single .gz file
+    # extract_gz_to_parquet("data.csv.gz", "output_parquet")
+    
+    # Example 3: Process multiple GZ files
+    gz_files = [
+        "yo.tar.gz",
+        "round2.tar.gz", 
+        "archive.tar.gz"
+    ]
+    
+    for gz_file in gz_files:
+        if os.path.exists(gz_file):
+            print(f"Processing {gz_file}...")
+            extract_gz_to_parquet(gz_file, "parquet_output")
+        else:
+            print(f"File {gz_file} not found")
+
+
+##################################################################
 import os
 import re
 import datetime
