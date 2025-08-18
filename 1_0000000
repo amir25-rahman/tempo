@@ -1,3 +1,125 @@
+import subprocess 
+import os
+
+# Paths
+scala_script_dir = "/apps/run/amdau/uat/Capp_python_venv/momo"
+scala_script_path = os.path.join(scala_script_dir, "null_count_script.scala")
+local_output_dir = os.path.join(scala_script_dir, "parquet_data/null_count_parque")
+
+# Ensure directories exist
+os.makedirs(scala_script_dir, exist_ok=True) 
+os.makedirs(local_output_dir, exist_ok=True)
+
+# Enhanced Scala script content
+scala_script = """
+import org.apache.spark.sql.functions._
+import spark.implicits._
+
+val inputPath = "/datalake_uat/mvda/conf/intermediate/opi/env1_uat_mvda_opi_confm_intermediate.db/trade_l_confm_app/as_of_dt=2025-07-08/prod_d_src=opi_as"
+val outputPath = "/datalake_uat/mvda/1dummy/null_count_parque"
+
+val df = spark.read.parquet(inputPath)
+val totalRows = df.count()
+
+// Enhanced statistics calculation
+// Extract metadata dynamically from input path
+val pathParts = inputPath.split("/")
+val schema = pathParts.find(_.endsWith(".db")).map(_.replace(".db", "")).map { dbName =>
+  val parts = dbName.split("_")
+  val mvdaIndex = parts.indexOf("mvda")
+  if (mvdaIndex >= 0) parts.drop(mvdaIndex).mkString("_") else dbName
+}.getOrElse("unknown_schema")
+val table = pathParts.find(_.contains("_")).filter(part => pathParts.indexOf(part) < pathParts.length - 2).lastOption.getOrElse("unknown_table")
+val system = pathParts.last.split("=").last
+
+val columnStats = df.columns.map { columnName =>
+  val column = col(columnName)
+  
+  // Basic counts
+  val nullCount = df.filter(column.isNull).count()
+  val nonNullCount = totalRows - nullCount
+  val distinctCount = df.select(columnName).distinct().count()
+  val duplicateCount = nonNullCount - distinctCount
+  
+  // Percentages
+  val nullPercentage = if (totalRows > 0) (nullCount.toDouble / totalRows.toDouble) * 100 else 0.0
+  val uniquePercentage = if (nonNullCount > 0) (distinctCount.toDouble / nonNullCount.toDouble) * 100 else 0.0
+  val duplicatePercentage = if (nonNullCount > 0) (duplicateCount.toDouble / nonNullCount.toDouble) * 100 else 0.0
+  
+  // Sample value (first non-null)
+  val sampleValue = try {
+    val sample = df.select(columnName).filter(column.isNotNull).limit(1).collect()
+    if (sample.nonEmpty && sample(0).get(0) != null) {
+      sample(0).get(0).toString
+    } else {
+      "No non-null values"
+    }
+  } catch {
+    case _: Exception => "Error getting sample"
+  }
+  
+  // Special character count (only for string columns)
+  val specialCharCount = try {
+    if (df.schema(columnName).dataType.toString.contains("String")) {
+      df.select(columnName)
+        .filter(column.isNotNull && column =!= "")
+        .withColumn("special_chars", length(column) - length(regexp_replace(column, "[^A-Za-z]", "")))
+        .agg(sum("special_chars")).collect()(0).getLong(0)
+    } else {
+      0L
+    }
+  } catch {
+    case _: Exception => 0L
+  }
+  
+  (schema, table, system, columnName, totalRows, nullCount, nullPercentage, uniquePercentage, duplicatePercentage, specialCharCount, sampleValue)
+}
+
+// Convert to DataFrame
+val statsDF = columnStats.toDF(
+  "schema",
+  "table",
+  "system",
+  "column_name",
+  "total_rows", 
+  "null_count",
+  "null_percentage",
+  "unique_percentage",
+  "duplicate_percentage",
+  "special_char_count",
+  "sample_value"
+)
+
+// Write results
+statsDF.write.mode("overwrite").parquet(outputPath)
+"""
+
+# Write Scala script
+with open(scala_script_path, "w") as f:
+    f.write(scala_script)
+
+# Run Scala script via spark-shell
+spark_shell_path = "/opt/mapr/spark/spark-2.4.8/bin/spark-shell"
+subprocess.run([spark_shell_path, "-i", scala_script_path], check=True)
+
+# Copy output from HDFS to local
+subprocess.run(["hadoop", "fs", "-get", "/datalake_uat/mvda/1dummy/null_count_parque", local_output_dir], check=True)
+print(f"Enhanced profiling Parquet file copied to local directory: {local_output_dir}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################################################################
+
 import gzip
 import tarfile
 import pandas as pd
