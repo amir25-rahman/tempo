@@ -1,3 +1,42 @@
+import pandas as pd
+
+# Example data
+data = {
+    "APP": ["A", "B", "A", "B", "C"],
+    "Delivery_Time": ["03:40:00 AM", "02:15:00 AM", "04:20:00 AM", "03:50:00 AM", "01:10:00 AM"]
+}
+df = pd.DataFrame(data)
+
+# Step 1: Convert to datetime (only time part matters)
+df["Delivery_Time"] = pd.to_datetime(df["Delivery_Time"], format="%I:%M:%S %p")
+
+# Step 2: Convert to seconds since midnight
+df["Seconds"] = (
+    df["Delivery_Time"].dt.hour * 3600
+    + df["Delivery_Time"].dt.minute * 60
+    + df["Delivery_Time"].dt.second
+)
+
+# Step 3: Average seconds per APP
+avg_seconds = df.groupby("APP")["Seconds"].mean()
+
+# Step 4: Convert back to datetime and format as AM/PM
+avg_time = pd.to_datetime(avg_seconds, unit="s").dt.strftime("%I:%M:%S %p")
+
+# Final result
+result = avg_time.reset_index(name="Avg_Delivery_Time")
+print(result)
+
+
+
+
+
+
+
+
+
+
+
 import subprocess 
 import os
 
