@@ -1,4 +1,16 @@
 def get_avg_delivery(df, freq="M"):
+    grouped = (
+        df.groupby([pd.Grouper(key="File_Date", freq=freq), "APP"])["Seconds"]
+        .mean()
+        .reset_index()
+    )
+    # Convert back to time format
+    grouped["Avg_Time"] = pd.to_datetime(grouped["Seconds"], unit="s").dt.strftime("%I:%M:%S %p")
+    return grouped
+
+
+
+def get_avg_delivery(df, freq="M"):
     """
     freq: "D" = daily, "W" = weekly, "M" = monthly, "Q" = quarterly
     """
