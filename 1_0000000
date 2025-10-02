@@ -1,3 +1,15 @@
+def get_avg_delivery(df, freq="M"):
+    """
+    freq: "D" = daily, "W" = weekly, "M" = monthly, "Q" = quarterly
+    """
+    grouped = (
+        df.groupby([pd.Grouper(key="File_Date", freq=freq), "APP"])["Seconds"]
+        .mean()
+        .reset_index()
+    )
+    return grouped
+
+
 
 # Pivot for plotting
 pivot_df = monthly_avg.pivot(index="YearMonth", columns="APP", values="Seconds")
