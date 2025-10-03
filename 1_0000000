@@ -63,17 +63,21 @@ colors = ['#3498db', '#e74c3c', '#2ecc71']
 # Create bars for each APP
 for i, app in enumerate(apps):
     values = pivot_df[app].values
-    bars = ax.bar(x + i * width, values, width, label=f'APP {app}', 
+    # Filter out NaN values and their positions
+    valid_positions = [j for j, v in enumerate(values) if not np.isnan(v)]
+    valid_values = [v for v in values if not np.isnan(v)]
+    valid_x = [x[j] + i * width for j in valid_positions]
+    
+    bars = ax.bar(valid_x, valid_values, width, label=f'APP {app}', 
                    color=colors[i], alpha=0.8, edgecolor='black')
     
     # Add value labels on bars
     for bar in bars:
         height = bar.get_height()
-        if not np.isnan(height):
-            time_str = minutes_to_time(height)
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{time_str} AM',
-                   ha='center', va='bottom', fontsize=9, fontweight='bold')
+        time_str = minutes_to_time(height)
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+               f'{time_str} AM',
+               ha='center', va='bottom', fontsize=9, fontweight='bold')
 
 ax.set_xlabel('Month', fontsize=12, fontweight='bold')
 ax.set_ylabel('Delivery Time', fontsize=12, fontweight='bold')
