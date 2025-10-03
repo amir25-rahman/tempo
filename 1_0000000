@@ -1,146 +1,129 @@
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
 
-# ---------- Sample data ----------
+# Sample data
 data = {
-    'Month': ['Jan','Jan','Feb','Feb','Mar','Mar','Apr','May','Jun','Jul','Aug','Sep'],
-    'SoR Name': ['A','B','A','B','A','B','A','A','B','A','B','A'],
-    'Delivery_Time': ['3:40:00 AM','4:00:00 AM','3:30:00 AM','3:50:00 AM',
-                      '4:10:00 AM','3:55:00 AM','3:50:00 AM','4:00:00 AM',
-                      '4:05:00 AM','4:15:00 AM','4:00:00 AM','4:20:00 AM']
+    'SoR Name': ['IP', 'API', 'Manual', 'External', 'Internal', 'Xfer', 'API', 'Manual', 
+                 'External', 'IP', 'Xfer', 'Manual', 'Internal', 'API', 'External', 'Xfer', 'IP'],
+    'Delivery Time': ['4/1/2025 5:16:00 AM', '4/2/2025 4:42:00 AM', '4/3/2025 6:05:00 AM',
+                      '4/4/2025 3:58:00 AM', '4/7/2025 5:21:00 AM', '4/8/2025 4:19:00 AM',
+                      '4/11/2025 5:48:00 AM', '4/14/2025 6:10:00 AM', '4/18/2025 3:45:00 AM',
+                      '5/2/2025 4:27:00 AM', '5/5/2025 5:36:00 AM', '5/9/2025 6:22:00 AM',
+                      '5/12/2025 5:09:00 AM', '5/16/2025 4:55:00 AM', '5/20/2025 3:39:00 AM',
+                      '5/23/2025 6:15:00 AM', '6/6/2025 5:44:00 AM'],
+    'day_of_week': ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Monday', 'Tuesday',
+                    'Friday', 'Monday', 'Friday', 'Friday', 'Monday', 'Friday',
+                    'Monday', 'Friday', 'Tuesday', 'Friday', 'Friday'],
+    'month': ['Apr', 'Apr', 'Apr', 'Apr', 'Apr', 'Apr', 'Apr', 'Apr', 'Apr',
+              'May', 'May', 'May', 'May', 'May', 'May', 'May', 'Jun']
 }
+
 df = pd.DataFrame(data)
 
-# ---------- Helper functions ----------
-def time_to_minutes(tstr):
-    if pd.isna(tstr):
-        return np.nan
-    t = pd.to_datetime(tstr, format='%I:%M:%S %p', errors='coerce')
-    if pd.isna(t):
-        return np.nan
-    return t.hour*60 + t.minute + t.second/60
+# Parse delivery time
+df['datetime'] = pd.to_datetime(df['Delivery Time'])
+df['time_decimal'] = df['datetime'].dt.hour + df['datetime'].dt.minute / 60
 
-def minutes_to_hhmmss_ampm(minutes):
-    if pd.isna(minutes):
-        return "N/A"
-    hours24 = int(minutes // 60)
-    mins = int(minutes % 60)
-    ampm = 'AM' if hours24 < 12 else 'PM'
-    hours12 = hours24 % 12
-    if hours12 == 0:
-        hours12 = 12
-    return f"{hours12:02d}:{mins:02d}:00 {ampm}"
+# Create day category
+df['day_category'] = df['day_of_week'].apply(lambda x: 'Friday' if x == 'Friday' else 'Mon-Thu')
 
-# Convert Delivery_Time to numeric minutes
-df['Minutes'] = df['Delivery_Time'].apply(time_to_minutes)
+# Calculate overall averages by SoR, Month, and Day Category
+avg_times = df.groupby(['SoR Name', 'month', 'day_category'])['time_decimal'].mean().reset_index()
 
-# ---------- Plot with Seaborn ----------
-sns.set_style("whitegrid")
-plt.figure(figsize=(12,6))
+# Function to convert decimal time to AM/PM format
+def decimal_to_time(decimal):
+    hours = int(decimal)
+    minutes = int((decimal - hours) * 60)
+    seconds = int(((decimal - hours) * 60 - minutes) * 60)
+    
+    period = 'AM' if hours < 12 else 'PM'
+    display_hour = hours if hours <= 12 else hours - 12
+    display_hour = 12 if display_hour == 0 else display_hour
+    
+    return f"{display_hour}:{minutes:02d}:{seconds:02d} {period}"
 
-# Bar plot: x=SoR, y=Minutes, hue=Month
-bar_plot = sns.barplot(
-    data=df, 
-    x='SoR Name', 
-    y='Minutes', 
-    hue='Month', 
-    palette='tab20', 
-    ci=None
-)
+# Get unique SoRs and months
+sors = sorted(df['SoR Name'].unique())
+months = ['Apr', 'May', 'Jun']
 
-# Add labels on bars
-for p in bar_plot.patches:
-    height = p.get_height()
-    if not np.isnan(height):
-        bar_plot.annotate(
-            minutes_to_hhmmss_ampm(height),
-            (p.get_x() + p.get_width() / 2., height),
-            ha='center', va='bottom',
-            fontsize=8,
-            rotation=90
-        )
+# Create subplots - one per SoR
+n_sors = len(sors)
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+axes = axes.flatten()
 
-# Labels and title
-plt.ylabel("Delivery Time")
-plt.xlabel("SoR Name")
-plt.title("Delivery Time per SoR (Jan - Sep)")
-plt.legend(title="Month", bbox_to_anchor=(1.05, 1), loc='upper left')
+colors = {'Friday': '#FF6B6B', 'Mon-Thu': '#4ECDC4'}
+
+for idx, sor in enumerate(sors):
+    ax = axes[idx]
+    
+    # Get all months that have data for this SoR
+    sor_data = avg_times[avg_times['SoR Name'] == sor]
+    sor_months = sor_data['month'].unique()
+    
+    # Prepare data for grouped bars
+    x = np.arange(len(months))
+    width = 0.35
+    
+    friday_vals = []
+    monThu_vals = []
+    
+    for month in months:
+        month_data = sor_data[sor_data['month'] == month]
+        
+        friday_val = month_data[month_data['day_category'] == 'Friday']['time_decimal'].values
+        monThu_val = month_data[month_data['day_category'] == 'Mon-Thu']['time_decimal'].values
+        
+        friday_vals.append(friday_val[0] if len(friday_val) > 0 else 0)
+        monThu_vals.append(monThu_val[0] if len(monThu_val) > 0 else 0)
+    
+    # Create bars
+    bars1 = ax.bar(x - width/2, friday_vals, width, label='Friday', 
+                   color=colors['Friday'], alpha=0.85, edgecolor='black', linewidth=1.5)
+    bars2 = ax.bar(x + width/2, monThu_vals, width, label='Mon-Thu', 
+                   color=colors['Mon-Thu'], alpha=0.85, edgecolor='black', linewidth=1.5)
+    
+    # Add value labels on bars
+    for i, (f_val, m_val) in enumerate(zip(friday_vals, monThu_vals)):
+        if f_val > 0:
+            time_str = decimal_to_time(f_val)
+            ax.text(i - width/2, f_val + 0.15, time_str, 
+                   ha='center', va='bottom', fontsize=10, fontweight='bold',
+                   color='#8B0000')
+        if m_val > 0:
+            time_str = decimal_to_time(m_val)
+            ax.text(i + width/2, m_val + 0.15, time_str, 
+                   ha='center', va='bottom', fontsize=10, fontweight='bold',
+                   color='#006666')
+    
+    ax.set_title(f'{sor}', fontsize=14, fontweight='bold', pad=15)
+    ax.set_xlabel('Month', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Delivery Time', fontsize=11, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(months, fontsize=11)
+    ax.grid(axis='y', alpha=0.3, linestyle='--', linewidth=1)
+    ax.legend(loc='upper right', fontsize=10, frameon=True, fancybox=True, shadow=True)
+    
+    # Format y-axis with time labels
+    all_vals = [v for v in friday_vals + monThu_vals if v > 0]
+    if len(all_vals) > 0:
+        y_min = max(0, int(min(all_vals)) - 1)
+        y_max = int(max(all_vals)) + 2
+        y_ticks = range(y_min, y_max)
+        y_labels = [decimal_to_time(y) for y in y_ticks]
+        ax.set_yticks(y_ticks)
+        ax.set_yticklabels(y_labels, fontsize=9)
+        ax.set_ylim(y_min, y_max)
+    
+    # Add subtle background
+    ax.set_facecolor('#F8F9FA')
+
+# Hide extra subplot if odd number of SoRs
+if n_sors < len(axes):
+    for idx in range(n_sors, len(axes)):
+        axes[idx].axis('off')
+
+plt.suptitle('Average Delivery Times: Friday vs Mon-Thu by System of Record and Month', 
+             fontsize=16, fontweight='bold', y=0.995)
 plt.tight_layout()
 plt.show()
-
-
-
-#####################################################################
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# ---------- Sample data ----------
-data = {
-    'Month': ['Jan','Jan','Feb','Feb','Mar','Mar','Apr','May','Jun','Jul','Aug','Sep'],
-    'SoR Name': ['A','B','A','B','A','B','A','A','B','A','B','A'],
-    'Delivery_Time': ['3:40:00 AM','4:00:00 AM','3:30:00 AM','3:50:00 AM',
-                      '4:10:00 AM','3:55:00 AM','3:50:00 AM','4:00:00 AM',
-                      '4:05:00 AM','4:15:00 AM','4:00:00 AM','4:20:00 AM']
-}
-df = pd.DataFrame(data)
-
-# ---------- Helper functions ----------
-def time_to_minutes(tstr):
-    if pd.isna(tstr):
-        return np.nan
-    t = pd.to_datetime(tstr, format='%I:%M:%S %p', errors='coerce')
-    if pd.isna(t):
-        return np.nan
-    return t.hour*60 + t.minute + t.second/60
-
-def minutes_to_hhmmss_ampm(minutes):
-    if pd.isna(minutes):
-        return "N/A"
-    hours24 = int(minutes // 60)
-    mins = int(minutes % 60)
-    ampm = 'AM' if hours24 < 12 else 'PM'
-    hours12 = hours24 % 12
-    if hours12 == 0:
-        hours12 = 12
-    return f"{hours12:02d}:{mins:02d}:00 {ampm}"
-
-# Convert Delivery_Time to numeric minutes
-df['Minutes'] = df['Delivery_Time'].apply(time_to_minutes)
-
-# ---------- Clustered scatter plot ----------
-sns.set_style("whitegrid")
-plt.figure(figsize=(12,6))
-
-# Stripplot for clustered scatter
-sns.stripplot(
-    data=df,
-    x='SoR Name',
-    y='Minutes',
-    hue='Month',
-    dodge=True,             # cluster by SoR
-    palette='tab20',
-    size=10,                # marker size
-    jitter=True             # slight horizontal jitter for clarity
-)
-
-# Annotate points with hh:mm:ss labels
-for i in range(df.shape[0]):
-    x = df['SoR Name'].iloc[i]
-    y = df['Minutes'].iloc[i]
-    month = df['Month'].iloc[i]
-    plt.text(
-        x=x, y=y, s=minutes_to_hhmmss_ampm(y),
-        ha='center', va='bottom', fontsize=8
-    )
-
-plt.xlabel("SoR Name")
-plt.ylabel("Delivery Time")
-plt.title("Delivery Time per SoR (Jan - Sep) - Scatter")
-plt.legend(title="Month", bbox_to_anchor=(1.05,1), loc='upper left')
-plt.tight_layout()
-plt.show()
-
