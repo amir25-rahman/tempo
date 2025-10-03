@@ -39,6 +39,8 @@ df = pd.DataFrame(data)
 
 # Function to convert minutes to time format
 def minutes_to_time(minutes):
+    if pd.isna(minutes):
+        return 'N/A'
     hours = int(minutes // 60)
     mins = int(minutes % 60)
     secs = int((minutes % 1) * 60)
@@ -51,6 +53,9 @@ pivot_df = df.pivot(index='Month', columns='APP', values='Delivery_Minutes')
 month_order = ['Jan', 'Feb']
 pivot_df = pivot_df.reindex(month_order)
 
+# Fill NaN with 0 for plotting purposes
+pivot_df_plot = pivot_df.fillna(0)
+
 # Create the visualization
 fig, ax = plt.subplots(figsize=(12, 7))
 
@@ -62,22 +67,18 @@ colors = ['#3498db', '#e74c3c', '#2ecc71']
 
 # Create bars for each APP
 for i, app in enumerate(apps):
-    values = pivot_df[app].values
-    # Filter out NaN values and their positions
-    valid_positions = [j for j, v in enumerate(values) if not np.isnan(v)]
-    valid_values = [v for v in values if not np.isnan(v)]
-    valid_x = [x[j] + i * width for j in valid_positions]
-    
-    bars = ax.bar(valid_x, valid_values, width, label=f'APP {app}', 
+    values = pivot_df_plot[app].values
+    bars = ax.bar(x + i * width, values, width, label=f'APP {app}', 
                    color=colors[i], alpha=0.8, edgecolor='black')
     
-    # Add value labels on bars
-    for bar in bars:
+    # Add value labels on bars (only for non-zero values)
+    for j, bar in enumerate(bars):
         height = bar.get_height()
-        time_str = minutes_to_time(height)
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{time_str} AM',
-               ha='center', va='bottom', fontsize=9, fontweight='bold')
+        if height > 0:  # Only label bars with actual data
+            time_str = minutes_to_time(height)
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{time_str} AM',
+                   ha='center', va='bottom', fontsize=9, fontweight='bold')
 
 ax.set_xlabel('Month', fontsize=12, fontweight='bold')
 ax.set_ylabel('Delivery Time', fontsize=12, fontweight='bold')
@@ -91,10 +92,13 @@ ax.grid(axis='y', alpha=0.3, linestyle='--')
 ax.axhline(y=180, color='red', linestyle='--', linewidth=2, label='3:00:00 AM Target', alpha=0.7)
 
 # Format Y-axis to show time format
-y_ticks = ax.get_yticks()
+max_value = pivot_df_plot.max().max()
+y_tick_interval = 60  # 1 hour intervals
+y_ticks = np.arange(0, max_value + y_tick_interval, y_tick_interval)
 y_labels = [minutes_to_time(y) for y in y_ticks]
+ax.set_yticks(y_ticks)
 ax.set_yticklabels(y_labels)
-ax.set_ylim(0, max(pivot_df.max()) * 1.15)
+ax.set_ylim(0, max_value * 1.15)
 
 plt.tight_layout()
 plt.show()
@@ -102,7 +106,7 @@ plt.show()
 # Print summary statistics
 print("\n=== Summary Statistics by Month and APP ===")
 print("\nDelivery Time by Month and APP:")
-pivot_time = pivot_df.applymap(lambda x: minutes_to_time(x) if not np.isnan(x) else 'N/A')
+pivot_time = pivot_df.applymap(lambda x: minutes_to_time(x) if not pd.isna(x) else 'N/A')
 print(pivot_time.to_string())
 
 print("\n\nAverage by Month (across all APPs):")
