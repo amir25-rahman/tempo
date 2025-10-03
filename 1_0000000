@@ -1,38 +1,10 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-
-# Create the dataframe
-data = {
-    'Month': ['Feb', 'Feb', 'Feb', 'Jan', 'Jan'],
-    'SoR Name': ['A', 'B', 'C', 'A', 'B'],   # Changed from APP to SoR Name
-    'Delivery_Minutes': [230.0, 230.0, 70.0, 240.0, 135.0],
-    'Avg_Delivery_Time': ['03:50:00', '03:50:00', '01:10:00', '04:00:00', '02:15:00']
-}
-df = pd.DataFrame(data)
-
-# Function to convert minutes to time format
-def minutes_to_time(minutes):
-    hours = int(minutes // 60)
-    mins = int(minutes % 60)
-    secs = int((minutes % 1) * 60)
-    return f"{hours:02d}:{mins:02d}:{secs:02d}"
-
-# Pivot the data to get SoR Name as columns and Month as rows
-pivot_df = df.pivot(index='Month', columns='SoR Name', values='Delivery_Minutes')
-
-# Sort by month order (Jan, Feb)
-month_order = ['Jan', 'Feb']
-pivot_df = pivot_df.reindex(month_order)
-
-# Create the visualization
-fig, ax = plt.subplots(figsize=(12, 7))
-
 # Set up bar positions
 x = np.arange(len(month_order))
 width = 0.25
 sors = pivot_df.columns.tolist()
-colors = ['#3498db', '#e74c3c', '#2ecc71']
+
+# Dynamically create enough colors
+colors = plt.cm.tab10(np.linspace(0, 1, len(sors)))
 
 # Create bars for each SoR Name
 for i, sor in enumerate(sors):
@@ -48,42 +20,3 @@ for i, sor in enumerate(sors):
             ax.text(bar.get_x() + bar.get_width()/2., height,
                    f'{time_str} AM',
                    ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-ax.set_xlabel('Month', fontsize=12, fontweight='bold')
-ax.set_ylabel('Delivery Time', fontsize=12, fontweight='bold')
-ax.set_title('Average Delivery Time per Month by SoR Name', fontsize=14, fontweight='bold', pad=20)
-ax.set_xticks(x + width)
-ax.set_xticklabels(month_order)
-ax.legend(title='SoR Name', fontsize=10, title_fontsize=11)
-ax.grid(axis='y', alpha=0.3, linestyle='--')
-
-# Add horizontal line at 3:00:00 AM (180 minutes)
-ax.axhline(y=180, color='red', linestyle='--', linewidth=2, label='3:00:00 AM Target', alpha=0.7)
-
-# Format Y-axis to show time format
-y_ticks = ax.get_yticks()
-y_labels = [minutes_to_time(y) for y in y_ticks]
-ax.set_yticklabels(y_labels)
-ax.set_ylim(0, max(pivot_df.max()) * 1.15)
-
-plt.tight_layout()
-plt.show()
-
-# Print summary statistics
-print("\n=== Summary Statistics by Month and SoR Name ===")
-print("\nDelivery Time by Month and SoR Name:")
-pivot_time = pivot_df.applymap(lambda x: minutes_to_time(x) if not np.isnan(x) else 'N/A')
-print(pivot_time.to_string())
-
-print("\n\nAverage by Month (across all SoR Names):")
-for month in month_order:
-    avg = df[df['Month'] == month]['Delivery_Minutes'].mean()
-    print(f"{month}: {minutes_to_time(avg)} AM")
-
-print("\n\nAverage by SoR Name (across all months):")
-for sor in sorted(df['SoR Name'].unique()):
-    avg = df[df['SoR Name'] == sor]['Delivery_Minutes'].mean()
-    count = len(df[df['SoR Name'] == sor])
-    print(f"SoR {sor}: {minutes_to_time(avg)} AM - {count} record(s)")
-
-print(f"\n\nOverall Average: {minutes_to_time(df['Delivery_Minutes'].mean())} AM")
