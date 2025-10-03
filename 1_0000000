@@ -1,22 +1,49 @@
-# Set up bar positions
-x = np.arange(len(month_order))
+# Helper: convert minutes to hh:mm:ss
+def minutes_to_time(minutes):
+    hours = int(minutes // 60)
+    mins = int(minutes % 60)
+    return f"{hours:02d}:{mins:02d}:00 AM"
+
+# Pivot table (Months as rows, SoR Names as columns)
+pivot_df = df.pivot(index='Month', columns='SoR Name', values='Delivery_Minutes')
+
+# Keep months in desired order
+month_order = ['Jan', 'Feb']
+pivot_df = pivot_df.reindex(month_order)
+
+# Plot
+fig, ax = plt.subplots(figsize=(8, 5))
+x = np.arange(len(month_order))  # positions
 width = 0.25
 sors = pivot_df.columns.tolist()
-
-# Dynamically create enough colors
 colors = plt.cm.tab10(np.linspace(0, 1, len(sors)))
 
-# Create bars for each SoR Name
+# Bars for each SoR Name
 for i, sor in enumerate(sors):
     values = pivot_df[sor].values
-    bars = ax.bar(x + i * width, values, width, label=f'SoR {sor}', 
-                   color=colors[i], alpha=0.8, edgecolor='black')
+    bars = ax.bar(x + i * width, values, width, label=f"SoR {sor}", 
+                  color=colors[i], edgecolor='black')
     
-    # Add value labels on bars
+    # Add labels on bars
     for bar in bars:
         height = bar.get_height()
         if not np.isnan(height):
-            time_str = minutes_to_time(height)
             ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{time_str} AM',
-                   ha='center', va='bottom', fontsize=9, fontweight='bold')
+                    minutes_to_time(height),
+                    ha='center', va='bottom', fontsize=9)
+
+# Labels & formatting
+ax.set_xlabel("Month", fontsize=12, fontweight='bold')
+ax.set_ylabel("Delivery Time", fontsize=12, fontweight='bold')
+ax.set_title("Average Delivery Time per Month by SoR", fontsize=14, fontweight='bold')
+ax.set_xticks(x + width)
+ax.set_xticklabels(month_order)
+ax.legend(title="SoR Name")
+ax.grid(axis='y', alpha=0.3, linestyle='--')
+
+# Format Y-axis as time
+y_ticks = ax.get_yticks()
+ax.set_yticklabels([minutes_to_time(y) for y in y_ticks])
+
+plt.tight_layout()
+plt.show()
