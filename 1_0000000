@@ -1,49 +1,122 @@
-# Helper: convert minutes to hh:mm:ss
-def minutes_to_time(minutes):
-    hours = int(minutes // 60)
-    mins = int(minutes % 60)
-    return f"{hours:02d}:{mins:02d}:00 AM"
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
+import math
 
-# Pivot table (Months as rows, SoR Names as columns)
-pivot_df = df.pivot(index='Month', columns='SoR Name', values='Delivery_Minutes')
+# ---------- SAMPLE DATA ----------
+data = {
+    'Month': ['Feb', 'Feb', 'Feb', 'Jan', 'Jan'],
+    'SoR Name': ['A', 'B', 'C', 'A', 'B'],
+    # You can provide minutes (numeric) OR time strings like "03:40:00 AM" or "03:40:00"
+    'Delivery_Minutes': [230.0, '03:50:00 AM', '01:10:00', '04:00:00', 135.0]
+}
+df = pd.DataFrame(data)
 
-# Keep months in desired order
+# ---------- helpers ----------
+def to_minutes(val):
+    """Return minutes as float from numeric or time-string inputs; else np.nan."""
+    if pd.isna(val):
+        return np.nan
+    # numeric
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        return float(val)
+    s = str(val).strip()
+    # try AM/PM parser
+    try:
+        if 'AM' in s.upper() or 'PM' in s.upper():
+            ts = pd.to_datetime(s, format='%I:%M:%S %p', errors='coerce')
+            if pd.notna(ts):
+                return float(ts.hour * 60 + ts.minute + ts.second / 60.0)
+            ts = pd.to_datetime(s, errors='coerce')
+            if pd.notna(ts):
+                return float(ts.hour * 60 + ts.minute + ts.second / 60.0)
+        # try timedelta-like 'HH:MM:SS'
+        td = pd.to_timedelta(s, errors='coerce')
+        if pd.notna(td):
+            return float(td.total_seconds() / 60.0)
+        # fallback numeric string
+        return float(s)
+    except Exception:
+        return np.nan
+
+def minutes_to_hhmmss_ampm(minutes):
+    """Format minutes (float) as 'hh:mm:ss AM' using 12-hour clock."""
+    if pd.isna(minutes):
+        return 'N/A'
+    total_seconds = int(round(minutes * 60))
+    hours24 = total_seconds // 3600
+    rem = total_seconds % 3600
+    mins = rem // 60
+    secs = rem % 60
+    ampm = 'AM' if hours24 < 12 else 'PM'
+    h12 = hours24 % 12
+    if h12 == 0:
+        h12 = 12
+    return f"{h12:02d}:{mins:02d}:{secs:02d} {ampm}"
+
+def tick_formatter(x, pos):
+    return minutes_to_hhmmss_ampm(x)
+
+# ---------- convert column to numeric minutes ----------
+df['Delivery_Minutes_Num'] = df['Delivery_Minutes'].apply(to_minutes)
+
+# ---------- pivot numeric values ----------
+pivot = df.pivot(index='Month', columns='SoR Name', values='Delivery_Minutes_Num')
+
+# ensure month order (adjust to your months)
 month_order = ['Jan', 'Feb']
-pivot_df = pivot_df.reindex(month_order)
+pivot = pivot.reindex(index=month_order)
 
-# Plot
-fig, ax = plt.subplots(figsize=(8, 5))
-x = np.arange(len(month_order))  # positions
-width = 0.25
-sors = pivot_df.columns.tolist()
-colors = plt.cm.tab10(np.linspace(0, 1, len(sors)))
+# ---------- plotting ----------
+fig, ax = plt.subplots(figsize=(8,5))
+x = np.arange(len(pivot.index))
+sors = pivot.columns.tolist()
+n = len(sors)
+group_width = 0.8
+width = group_width / n if n > 0 else group_width
+colors = plt.cm.tab10(np.linspace(0, 1, max(1, n)))
 
-# Bars for each SoR Name
+# center the group of bars under each month
 for i, sor in enumerate(sors):
-    values = pivot_df[sor].values
-    bars = ax.bar(x + i * width, values, width, label=f"SoR {sor}", 
-                  color=colors[i], edgecolor='black')
-    
-    # Add labels on bars
+    vals = pivot[sor].values
+    positions = x - group_width/2 + i*width + width/2
+    bars = ax.bar(positions, vals, width=width, label=sor, color=colors[i], edgecolor='black')
+    # add labels on bars
     for bar in bars:
-        height = bar.get_height()
-        if not np.isnan(height):
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                    minutes_to_time(height),
+        h = bar.get_height()
+        if not pd.isna(h):
+            ax.text(bar.get_x() + bar.get_width()/2., h,
+                    minutes_to_hhmmss_ampm(h),
                     ha='center', va='bottom', fontsize=9)
 
-# Labels & formatting
-ax.set_xlabel("Month", fontsize=12, fontweight='bold')
-ax.set_ylabel("Delivery Time", fontsize=12, fontweight='bold')
-ax.set_title("Average Delivery Time per Month by SoR", fontsize=14, fontweight='bold')
-ax.set_xticks(x + width)
-ax.set_xticklabels(month_order)
-ax.legend(title="SoR Name")
+ax.set_xticks(x)
+ax.set_xticklabels(pivot.index)
+ax.set_xlabel('Month')
+ax.set_title('Average Delivery Time per Month by SoR')
+ax.legend(title='SoR')
+
+# y ticks: choose a sensible step (10 / 30 / 60 minutes) based on max
+ymax = np.nanmax(pivot.values) if pivot.size > 0 else 0
+if np.isnan(ymax) or ymax <= 0:
+    ymax = 60
+if ymax <= 60:
+    step = 10
+elif ymax <= 180:
+    step = 30
+else:
+    step = 60
+yticks = np.arange(0, math.ceil(ymax/step)*step + 1, step)
+ax.set_yticks(yticks)
+ax.yaxis.set_major_formatter(FuncFormatter(tick_formatter))
+ax.set_ylim(0, yticks[-1])
+
 ax.grid(axis='y', alpha=0.3, linestyle='--')
-
-# Format Y-axis as time
-y_ticks = ax.get_yticks()
-ax.set_yticklabels([minutes_to_time(y) for y in y_ticks])
-
 plt.tight_layout()
 plt.show()
+
+# ---------- quick table display ----------
+print("\nDelivery minutes (numeric):")
+print(df[['Month','SoR Name','Delivery_Minutes_Num']].to_string(index=False))
+print("\nPivot (formatted):")
+print(pivot.applymap(lambda x: minutes_to_hhmmss_ampm(x) if pd.notna(x) else 'N/A').to_string())
