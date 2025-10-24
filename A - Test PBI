@@ -1,3 +1,18 @@
+SELECT
+  CASE
+    WHEN POSITION('_' IN prod_src) > 0 
+         AND POSITION('_' IN SUBSTR(prod_src, POSITION('_' IN prod_src) + 1)) > 0 THEN
+      SPLIT_PART(prod_src, '_', 1) || '_' || SPLIT_PART(prod_src, '_', 2)
+    ELSE prod_src
+  END AS before_second_underscore
+FROM your_table
+
+
+
+
+
+
+
 You're still getting the same compression error, which means the file is definitely corrupted at the gzip level. Since the file appears to actually be gzipped (based on the error), but the compression is damaged, let's try some advanced recovery techniques:
 
 ## Solution 1: Try to extract whatever we can before corruption
