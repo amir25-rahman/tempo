@@ -1,3 +1,16 @@
+
+SELECT *
+FROM your_table
+WHERE as_of_dt = 
+    CASE 
+        WHEN DAYOFWEEK(CURRENT_DATE) = 2 THEN DATE_SUB(CURRENT_DATE, 3)  -- If today is Monday, use Friday
+        ELSE DATE_SUB(CURRENT_DATE, 1)  -- For all other days, subtract 1 day
+    END
+
+
+
+
+
 SELECT *
 FROM your_table
 WHERE as_of_dt = 
