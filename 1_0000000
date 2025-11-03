@@ -1,3 +1,15 @@
+SELECT *
+FROM your_table
+WHERE as_of_dt = 
+    CASE 
+        WHEN DAYOFWEEK(CURRENT_DATE) = 2 THEN DATEADD(DAY, -3, CURRENT_DATE)  -- If today is Monday, use Friday
+        ELSE DATEADD(DAY, -1, CURRENT_DATE)  -- For all other days, just subtract 1 day
+    END
+
+
+
+
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
