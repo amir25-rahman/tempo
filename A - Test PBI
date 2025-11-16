@@ -1,2788 +1,567 @@
-SELECT
-  CASE
-    WHEN POSITION('_' IN prod_src) > 0 
-         AND POSITION('_' IN SUBSTR(prod_src, POSITION('_' IN prod_src) + 1)) > 0 THEN
-      SPLIT_PART(prod_src, '_', 1) || '_' || SPLIT_PART(prod_src, '_', 2)
-    ELSE prod_src
-  END AS before_second_underscore
-FROM your_table
-
-
-
-
-
-
-
-You're still getting the same compression error, which means the file is definitely corrupted at the gzip level. Since the file appears to actually be gzipped (based on the error), but the compression is damaged, let's try some advanced recovery techniques:
-
-## Solution 1: Try to extract whatever we can before corruption
-
-```python
-import gzip
-import struct
-
-def extract_partial_gzip(filename):
-    """Extract data from gzip file until we hit corruption"""
-    
-    with open(filename, 'rb') as f:
-        # Check gzip header
-        magic = f.read(2)
-        if magic != b'\x1f\x8b':
-            print("Not a gzip file")
-            return None
-            
-        method = f.read(1)[0]
-        flags = f.read(1)[0]
-        mtime = struct.unpack('<I', f.read(4))[0]
-        xfl = f.read(1)[0]
-        os = f.read(1)[0]
-        
-        print(f"Gzip header info:")
-        print(f"  Method: {method}")
-        print(f"  Flags: {flags}")
-        print(f"  Modified time: {mtime}")
-        
-        # Skip optional headers based on flags
-        if flags & 4:  # FEXTRA
-            xlen = struct.unpack('<H', f.read(2))[0]
-            f.read(xlen)
-        if flags & 8:  # FNAME
-            while f.read(1) != b'\x00': pass
-        if flags & 16:  # FCOMMENT
-            while f.read(1) != b'\x00': pass
-        if flags & 2:  # FHCRC
-            f.read(2)
-        
-        # Now try to decompress the actual data
-        compressed_data = f.read()
-        
-    print(f"Compressed data size: {len(compressed_data)} bytes")
-    
-    # Try to decompress in chunks
-    import zlib
-    decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
-    
-    recovered_data = b""
-    chunk_size = 1024
-    
-    for i in range(0, len(compressed_data), chunk_size):
-        chunk = compressed_data[i:i+chunk_size]
-        try:
-            decompressed_chunk = decompressor.decompress(chunk)
-            recovered_data += decompressed_chunk
-            print(f"Processed chunk {i//chunk_size + 1}, recovered {len(recovered_data)} bytes so far")
-        except zlib.error as e:
-            print(f"Hit corruption at chunk {i//chunk_size + 1}: {e}")
-            break
-    
-    return recovered_data
-
-recovered = extract_partial_gzip('sys.csv.gz.20250814')
-if recovered:
-    print(f"\nRecovered {len(recovered)} bytes")
-    print(f"First 500 characters:\n{recovered[:500].decode('utf-8', errors='ignore')}")
-```
-
-## Solution 2: Use dd to extract good portions (Unix/Linux/Mac)
-
-```python
-import subprocess
-import os
-
-def extract_with_dd(filename, output_file='recovered_partial.gz'):
-    """Use dd to extract portions of the file"""
-    
-    file_size = os.path.getsize(filename)
-    print(f"Original file size: {file_size} bytes")
-    
-    # Try extracting first 75% of the file
-    extract_size = int(file_size * 0.75)
-    
-    try:
-        cmd = ['dd', f'if={filename}', f'of={output_file}', f'bs=1', f'count={extract_size}']
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print(f"Extracted first {extract_size} bytes to {output_file}")
-            
-            # Try to read the partial file
-            try:
-                import gzip
-                with gzip.open(output_file, 'rt') as f:
-                    content = f.read()
-                print(f"Successfully decompressed partial file: {len(content)} characters")
-                return content
-            except Exception as e:
-                print(f"Could not decompress partial file: {e}")
-                
-    except FileNotFoundError:
-        print("dd command not available (Windows?)")
-    except Exception as e:
-        print(f"dd extraction failed: {e}")
-    
-    return None
-
-# Only works on Unix-like systems
-if os.name != 'nt':  # Not Windows
-    partial_content = extract_with_dd('sys.csv.gz.20250814')
-```
-
-## Solution 3: Try Python gzip recovery
-
-```python
-import gzip
-import zlib
-
-def recover_gzip_python(filename):
-    """Try to recover data using Python's gzip with error handling"""
-    
-    try:
-        # Open file and try to read in very small chunks
-        with gzip.GzipFile(filename, 'rb') as gz:
-            recovered_chunks = []
-            chunk_size = 64  # Very small chunks
-            
-            while True:
-                try:
-                    chunk = gz.read(chunk_size)
-                    if not chunk:
-                        break
-                    recovered_chunks.append(chunk)
-                    print(f"Recovered chunk {len(recovered_chunks)}, total: {sum(len(c) for c in recovered_chunks)} bytes", end='\r')
-                    
-                except Exception as e:
-                    print(f"\nStopped at chunk {len(recovered_chunks)} due to: {e}")
-                    break
-            
-            if recovered_chunks:
-                total_data = b''.join(recovered_chunks)
-                print(f"\nTotal recovered: {len(total_data)} bytes")
-                return total_data
-                
-    except Exception as e:
-        print(f"Recovery failed: {e}")
-    
-    return None
-
-recovered_data = recover_gzip_python('sys.csv.gz.20250814')
-if recovered_data:
-    # Try to interpret as text
-    try:
-        text_data = recovered_data.decode('utf-8', errors='ignore')
-        print(f"Recovered text (first 1000 chars):\n{text_data[:1000]}")
-        
-        # Save to file
-        with open('recovered_data.txt', 'w') as f:
-            f.write(text_data)
-        print("Saved recovered data to 'recovered_data.txt'")
-        
-    except Exception as e:
-        print(f"Could not decode as text: {e}")
-```
-
-## Solution 4: Check if you have other copies or can regenerate
-
-```python
-import glob
-import os
-from datetime import datetime, timedelta
-
-def find_alternative_files(corrupted_file):
-    """Look for similar files that might be alternatives"""
-    
-    directory = os.path.dirname(corrupted_file) or '.'
-    
-    # Extract date from filename
-    import re
-    date_match = re.search(r'(\d{8})', corrupted_file)
-    if date_match:
-        file_date = date_match.group(1)
-        print(f"Corrupted file date: {file_date}")
-        
-        # Look for files from adjacent dates
-        base_pattern = corrupted_file.replace(file_date, '*')
-        similar_files = glob.glob(base_pattern)
-        
-        print(f"Similar files found:")
-        for f in sorted(similar_files):
-            size = os.path.getsize(f)
-            mtime = datetime.fromtimestamp(os.path.getmtime(f))
-            status = "CORRUPTED" if f == corrupted_file else "OK"
-            print(f"  {f} - {size:,} bytes - {mtime} - {status}")
-    
-    # Look for any sys.* files
-    sys_files = glob.glob(os.path.join(directory, 'sys.*'))
-    print(f"\nAll sys.* files:")
-    for f in sorted(sys_files)[:20]:  # Limit to 20 files
-        size = os.path.getsize(f)
-        print(f"  {f} - {size:,} bytes")
-
-find_alternative_files('sys.csv.gz.20250814')
-```
-
-## Immediate steps:
-
-1. **Try Solution 1** first - it might recover some usable data
-2. **Check Solution 4** to see if there are similar files from other dates
-3. If you're on Linux/Mac, **try Solution 2** with the `dd` command
-
-## Questions to consider:
-
-- Is this a daily file? Can you get yesterday's or today's version?
-- Is this generated by a system process that you can re-run?
-- Do you have backups of this data?
-- What type of data should this file contain? (logs, database export, etc.)
-
-The file is definitely corrupted at the gzip compression level, so recovery options are limited. Your best bet might be to find an alternative source for the same data.​​​​​​​​​​​​​​​​
-
-
-
-
-
-
-
-
-3$:!:$;):7:&:&:$;!;!;!:$:
-
-
-This error indicates that the file is not actually a text-based gzipped CSV file, or there's an encoding issue. Here are several solutions to try:
-
-## Solution 1: Use binary mode first, then decode
-
-```python
-import gzip
-import pandas as pd
-
-# Try reading in binary mode first
-with gzip.open('file.csv.gz', 'rb') as f:
-    df = pd.read_csv(f)
-```
-
-## Solution 2: Try different encodings
-
-```python
-import gzip
-import pandas as pd
-
-# Try common encodings
-encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-
-for encoding in encodings:
-    try:
-        with gzip.open('file.csv.gz', 'rt', encoding=encoding) as f:
-            df = pd.read_csv(f)
-        print(f"Success with encoding: {encoding}")
-        break
-    except UnicodeDecodeError:
-        print(f"Failed with encoding: {encoding}")
-        continue
-```
-
-## Solution 3: Check if file is actually gzipped
-
-```python
-import gzip
-import pandas as pd
-
-# First, check if the file is actually gzipped
-try:
-    with gzip.open('file.csv.gz', 'rt', encoding='utf-8') as f:
-        # Try to read just the first line
-        first_line = f.readline()
-        print("File is properly gzipped")
-except:
-    print("File might not be gzipped or has encoding issues")
-    # Try reading as regular CSV
-    df = pd.read_csv('file.csv.gz')
-```
-
-## Solution 4: Use error handling
-
-```python
-import gzip
-import pandas as pd
-
-with gzip.open('file.csv.gz', 'rt', encoding='utf-8', errors='replace') as f:
-    df = pd.read_csv(f)
-```
-
-## Solution 5: Detect encoding automatically
-
-```python
-import gzip
-import chardet
-import pandas as pd
-
-# Read a sample to detect encoding
-with gzip.open('file.csv.gz', 'rb') as f:
-    sample = f.read(10000)  # Read first 10KB
-    encoding = chardet.detect(sample)['encoding']
-    print(f"Detected encoding: {encoding}")
-
-# Now read with detected encoding
-with gzip.open('file.csv.gz', 'rt', encoding=encoding) as f:
-    df = pd.read_csv(f)
-```
-
-## Solution 6: Verify file integrity
-
-```python
-import gzip
-
-# Check if file can be opened at all
-try:
-    with gzip.open('file.csv.gz', 'rb') as f:
-        # Read first few bytes
-        header = f.read(10)
-        print("File header:", header)
-except Exception as e:
-    print(f"Error opening file: {e}")
-```
-
-## Common causes of this error:
-
-1. **File corruption**: The .gz file might be corrupted
-2. **Wrong file type**: The file might not actually be gzipped
-3. **Encoding mismatch**: The file uses a different encoding than UTF-8
-4. **Incomplete download**: If downloaded, the file might be incomplete
-
-Try these solutions in order. The binary mode approach (Solution 1) often works best, as pandas can handle the decompression and encoding detection internally.​​​​​​​​​​​​​​​​
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pyarrow.fs as fs
-import pyarrow.parquet as pq
-import pandas as pd
-
-# Connect to HDFS
-hdfs = fs.HadoopFileSystem(host="namenode-host", port=8020)
-
-# Example: Read Parquet directly from HDFS into pandas
-table = pq.read_table("/user/data/myfile.parquet", filesystem=hdfs)
-df = table.to_pandas()
-
-print(df.head())
-
-
-
-
-
-
-
-WorkWeekGroup =
-VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
-VAR IsWorkday = WEEKDAY(CurrentDate, 2) <= 5
-VAR WeekStart = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
-VAR WeekEnd = WeekStart + 4
-RETURN
-IF(
-    IsWorkday,
-    FORMAT(WeekStart, "mmm dd") & " - " & FORMAT(WeekEnd, "mmm dd"),
-    BLANK()
-)
-
-
-
-WeekStartDate =
-'DSTBTN_BATCH_DTL'[BUSINESS_DATE] - WEEKDAY('DSTBTN_BATCH_DTL'[BUSINESS_DATE], 2) + 1
-
-WorkWeekGroup =
-VAR WeekStart = 'DSTBTN_BATCH_DTL'[WeekStartDate]
-VAR WeekEnd = WeekStart + 4
-RETURN FORMAT(WeekStart, "mmm dd") & " - " & FORMAT(WeekEnd, "mmm dd")
-
-
-
-WorkWeekGroup =
-VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
-VAR IsWorkday = WEEKDAY(CurrentDate, 2) <= 5
-VAR WeekStart = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
-VAR WeekEnd = WeekStart + 4
-RETURN
-IF(
-    IsWorkday,
-    FORMAT(WeekStart, "mmm dd") & " - " & FORMAT(WeekEnd, "mmm dd"),
-    BLANK()
-)
-
-
-
-
-
-d
-IsHoliday =
-VAR DateOnly = 'Fact'[TransactionDateOnly]  -- or 'Fact'[TransactionDate] if already date-only
-RETURN
-SWITCH(
-    TRUE(),
-    DateOnly IN {
-        DATE(2025,1,1),   -- New Year's Day
-        DATE(2025,1,20),  -- Martin Luther King Jr. Day
-        DATE(2025,2,17),  -- Presidents' Day
-        DATE(2025,5,26),  -- Memorial Day
-        DATE(2025,6,19),  -- Juneteenth
-        DATE(2025,7,4),   -- Independence Day
-        DATE(2025,9,1),   -- Labor Day
-        DATE(2025,10,13), -- Columbus Day
-        DATE(2025,11,11), -- Veterans Day
-        DATE(2025,11,27), -- Thanksgiving Day
-        DATE(2025,12,25)  -- Christmas Day
-    }, TRUE(),
-    FALSE()
-)
-
-
-
-
-
-
-
-WorkWeekGroup =
-VAR CurrentDate = 'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
-
-VAR IsWorkday = WEEKDAY(CurrentDate, 2) <= 5
-
-VAR WeekStart = CurrentDate - WEEKDAY(CurrentDate, 2) + 1
-VAR WeekEnd = WeekStart + 4
-
-RETURN
-IF(
-    IsWorkday,
-    WeekStart & " - " & WeekEnd,
-    BLANK()
-)
-
-
-
-
-WorkWeekGroup =
-VAR CurrentDate =
-    'DSTBTN_BATCH_DTL'[BUSINESS_DATE]
-
--- Check if current date is a workday (Mon–Fri and NOT holiday)
-VAR IsWorkday =
-    WEEKDAY ( CurrentDate, 2 ) <= 5 &&
-    NOT (
-        CONTAINS (
-            Holidays,
-            Holidays[Date], CurrentDate
-        )
-    )
-
--- Get Monday of the current week
-VAR WeekStart =
-    CurrentDate - WEEKDAY ( CurrentDate, 2 ) + 1
-
--- Get Friday of the current week
-VAR WeekEnd =
-    WeekStart + 4
-
-RETURN
-IF (
-    IsWorkday,
-    FORMAT ( WeekStart, "mmm dd" ) & " - " & FORMAT ( WeekEnd, "mmm dd" ),
-    BLANK()
-)
-
-
-
-
-
-
-```python
-def fastest_dynamic_merge(df, df2):
-    # Standardize all columns to lowercase
-    df = df.copy()
-    df2 = df2.copy()
-    
-    for col in ['schema', 'table', 'sys', 'col']:
-        df[col] = df[col].astype(str).str.lower()
-        df2[col] = df2[col].astype(str).str.lower()
-    
-    # Create lookup list for O(1) access
-    df_sys_list = df['sys'].tolist()
-    
-    # Optimized matching using list comprehension
-    df2['matched_sys'] = [
-        next((sys_val for sys_val in df_sys_list if sys_val in str(row)), None)
-        for row in df2['sys']
-    ]
-    
-    # Filter and create keys
-    df2_matched = df2.dropna(subset=['matched_sys'])
-    
-    df['pk'] = df['schema'] + '|' + df['table'] + '|' + df['sys'] + '|' + df['col']
-    df2_matched['pk'] = df2_matched['schema'] + '|' + df2_matched['table'] + '|' + df2_matched['matched_sys'] + '|' + df2_matched['col']
-    
-    # Fast merge
-    result = df.merge(df2_matched, on='pk', how='left', suffixes=('', '_df2'))
-    result['match_indicator'] = np.where(result['sys_df2'].notna(), 'Y', 'N')
-    
-    return result
-
-# Execute
-result = fastest_dynamic_merge(df, df2)
-```
-
-
-
-
-
-
-
-```python
-import pandas as pd
+"""
+Data Standardization Tool - Memory-Optimized Version
+Analyzes distinct values per column, detects typos, and suggests standardization mappings.
+"""
+
+import csv
+import json
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
+from collections import defaultdict, Counter
+import sys
+import gc
 import numpy as np
 
-def fast_dynamic_merge(df, df2):
-    # Get unique sys values from df for faster lookup
-    df_sys_set = set(df['sys'].astype(str))
+def standardize_value(value):
+    """
+    Clean and standardize a single value.
+    Preserves sensitive patterns (e.g., 'not found', 'n/a') in their original form.
+    """
+    if value is None or value == '' or (isinstance(value, float) and np.isnan(value)):
+        return ""
     
-    # Vectorized function to find matches
-    def find_match_vectorized(sys_series):
-        matches = []
-        for sys_val in sys_series:
-            sys_str = str(sys_val)
-            found_match = None
-            for df_sys in df_sys_set:
-                if df_sys in sys_str:
-                    found_match = df_sys
-                    break
-            matches.append(found_match)
-        return matches
+    cleaned = str(value).strip()
     
-    # Find matches for df2
-    df2 = df2.copy()
-    df2['matched_sys'] = find_match_vectorized(df2['sys'])
-    
-    # Filter only matched rows
-    df2_matched = df2[df2['matched_sys'].notna()].copy()
-    
-    # Create primary keys
-    df['primary_key'] = (df['schema'].astype(str) + '|' + 
-                         df['table'].astype(str) + '|' + 
-                         df['sys'].astype(str) + '|' + 
-                         df['col'].astype(str))
-    
-    df2_matched['primary_key'] = (df2_matched['schema'].astype(str) + '|' + 
-                                  df2_matched['table'].astype(str) + '|' + 
-                                  df2_matched['matched_sys'] + '|' + 
-                                  df2_matched['col'].astype(str))
-    
-    # Merge with indicator
-    merged = pd.merge(df, df2_matched, 
-                      on='primary_key', 
-                      how='left', 
-                      indicator=True,
-                      suffixes=('', '_df2'))
-    
-    # Create custom indicator: Y for inner, N for left_only
-    merged['match_indicator'] = np.where(merged['_merge'] == 'both', 'Y', 'N')
-    
-    # Drop the default indicator
-    merged = merged.drop('_merge', axis=1)
-    
-    return merged
-
-# Execute
-result = fast_dynamic_merge(df, df2)
-```
-
-**Even Faster Version (if you have many records):**
-
-```python
-def fastest_dynamic_merge(df, df2):
-    # Create lookup dictionary for O(1) access
-    df_sys_list = df['sys'].astype(str).tolist()
-    
-    # Optimized matching using list comprehension
-    df2 = df2.copy()
-    df2['matched_sys'] = [
-        next((sys_val for sys_val in df_sys_list if sys_val in str(row)), None)
-        for row in df2['sys']
+    # Sensitive patterns that should not be standardized
+    lower_check = cleaned.lower()
+    sensitive_patterns = [
+        'not found', 'notfound', 'not_found',
+        'not available', 'not_available', 'n/a', 'na',
+        'null', 'none', 'unknown', 'missing',
+        'error', 'invalid', 'undefined'
     ]
     
-    # Filter and create keys
-    df2_matched = df2.dropna(subset=['matched_sys'])
+    for pattern in sensitive_patterns:
+        if pattern in lower_check:
+            return cleaned
     
-    df['pk'] = df['schema'].astype(str) + '|' + df['table'].astype(str) + '|' + df['sys'].astype(str) + '|' + df['col'].astype(str)
-    df2_matched['pk'] = df2_matched['schema'].astype(str) + '|' + df2_matched['table'].astype(str) + '|' + df2_matched['matched_sys'] + '|' + df2_matched['col'].astype(str)
+    # Standard cleaning: lowercase and normalize whitespace
+    cleaned = cleaned.lower()
+    cleaned = ' '.join(cleaned.split())
     
-    # Fast merge
-    result = df.merge(df2_matched, on='pk', how='left', suffixes=('', '_df2'))
-    result['match_indicator'] = np.where(result['sys_df2'].notna(), 'Y', 'N')
+    return cleaned
+
+def create_ngram_set(value, n=3):
+    """Generate n-grams from a string for similarity comparison."""
+    if not value or len(value) < n:
+        return set()
+    return {value[i:i+n] for i in range(len(value) - n + 1)}
+
+def jaccard_similarity(ngrams1, ngrams2):
+    """Calculate Jaccard similarity coefficient between two n-gram sets."""
+    if not ngrams1 or not ngrams2:
+        return 0.0
     
-    return result
-
-# Execute
-result = fastest_dynamic_merge(df, df2)
-```
-
-The result will have:
-- `match_indicator = 'Y'` for records that matched (inner join equivalent)  
-- `match_indicator = 'N'` for records from df that had no match (left only)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-sys_values = set(df['sys'].str.lower())
-df2_sys_match = df2['search'].str.lower().where(lambda s: s.isin(sys_values), '')
-
-df2['pk_2'] = (
-    df2['schema'].str.lower() +
-    df2['table'].str.lower() +
-    df2_sys_match +
-    df2['col'].str.lower()
-)
-
-
-
-
-
-
-
-
-import pandas as pd
-
-# Read the parquet file
-df = pd.read_parquet('your_file.parquet')
-
-
-import re
-result = df[df.apply(lambda row: bool(re.search(rf'\b{re.escape(row["prod_sys"])}\b', row['filter_label'])), axis=1)]
-
-
-# View results
-print(result)
-
-# result.to_parquet('output.parquet')
-#################################################################
-
-
-
-import os
-import re
-import datetime
-from glob import glob
-from functools import lru_cache
-from typing import List, Dict, Any, Optional
-
-import pandas as pd
-import pyarrow.parquet as pq
-
-
-# ---------------- Helper Functions ---------------- #
-@lru_cache(maxsize=1)
-def get_special_char_pattern():
-    """Cache compiled regex pattern for special characters."""
-    return re.compile(r'[^a-zA-Z0-9\s.,:;!?@#\$%\^\&\*\(\)_\-\+=]')
-
-
-def get_special_char_count_vectorized(series: pd.Series) -> int:
-    try:
-        if series.dtype != object or series.empty:
-            return 0
-        
-        str_array = series.dropna().astype(str)
-        if str_array.empty:
-            return 0
-        
-        pattern = get_special_char_pattern()
-        return sum(len(pattern.findall(text)) for text in str_array)
-    except Exception:
-        return 0
-
-
-@lru_cache(maxsize=100)
-def get_null_bucket(null_pct: float) -> str:
-    """Bucketize null percentage into predefined ranges."""
-    if null_pct == 0:
-        return '0%'
-    elif null_pct < 0.25:
-        return '0-24%'
-    elif null_pct < 0.50:
-        return '25-49%'
-    elif null_pct < 0.75:
-        return '50-74%'
-    elif null_pct < 1:
-        return '75-99%'
-    elif null_pct == 1:
-        return '100%'
-    return "Unknown"
-
-
-def safe_convert_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert data types to reduce memory usage."""
-    try:
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                # Convert to categorical if it saves memory and has reasonable cardinality
-                unique_ratio = df[col].nunique() / len(df)
-                if unique_ratio < 0.3 and df[col].nunique() < 10000:
-                    try:
-                        df[col] = df[col].astype('category')
-                    except:
-                        pass
-        return df
-    except Exception:
-        return df
-
-
-def get_top_duplicates_safe(series: pd.Series, top_n: int = 5) -> str:
-    """Extract top duplicate values with error handling."""
-    try:
-        # Get value counts for the full series (not sampled)
-        counts = series.value_counts(dropna=True)
-        duplicated_counts = counts[counts > 1]
-        
-        if duplicated_counts.empty:
-            return "None"
-        
-        if len(duplicated_counts) > top_n:
-            top_dups = duplicated_counts.head(top_n)
-            remaining = len(duplicated_counts) - top_n
-            dup_list = [f"{str(v)[:50]}({c})" for v, c in top_dups.items()] + [f"...+{remaining}"]
-        else:
-            dup_list = [f"{str(v)[:50]}({c})" for v, c in duplicated_counts.items()]
-        
-        return ", ".join(dup_list)
-    except Exception:
-        return "Error calculating duplicates"
-
-
-def process_single_column(col_name: str, series: pd.Series, total_rows: int, prod_sys: str, top_n: int = 5) -> Optional[Dict[str, Any]]:
-    try:
-        if col_name == "prod_sys":
-            return None
-        
-        null_count = int(series.isnull().sum())
-        null_pct = null_count / total_rows if total_rows > 0 else 0
-        
-        try:
-            unique_count = int(series.nunique(dropna=True))
-        except:
-            unique_count = 0
-            
-        unique_pct = unique_count / total_rows if total_rows > 0 else 0
-        duplicated_pct = (total_rows - unique_count) / total_rows if total_rows > 0 else 0
-        
-        special_char_count = get_special_char_count_vectorized(series)
-        
-        try:
-            mode_values = series.mode()
-            most_freq_val = mode_values.iloc[0] if not mode_values.empty else None
-            if most_freq_val is not None:
-                most_freq_val = str(most_freq_val)[:100]
-        except:
-            most_freq_val = "Error calculating mode"
-        
-        dup_str = get_top_duplicates_safe(series, top_n)
-        
-        return {
-            'column': col_name,
-            'data_type': str(series.dtype),
-            'null_count': null_count,
-            'null_pct': round(null_pct * 100, 2),
-            'null_bucket': get_null_bucket(null_pct),
-            'unique_pct': round(unique_pct * 100, 4),
-            'duplicated_pct': round(duplicated_pct * 100, 4),
-            'special_char_count': special_char_count,
-            'most_frequent_value': most_freq_val,
-            'total_rows': total_rows,
-            'prod_sys': str(prod_sys),
-            'Dups_freq_5_max': dup_str
-        }
-        
-    except Exception:
-        return None
-
-
-def analyze_parquet_file_safe(file_path: str, top_n: int = 5) -> List[Dict[str, Any]]:
-    results = []
+    intersection = len(ngrams1 & ngrams2)
+    union = len(ngrams1 | ngrams2)
     
-    try:
-        try:
-            df = pd.read_parquet(file_path, engine='pyarrow')
-        except Exception:
-            try:
-                table = pq.read_table(file_path)
-                df = table.to_pandas()
-                del table
-            except Exception:
-                raise Exception("Failed to read parquet file")
-        
-        base_name = os.path.basename(file_path).replace('.parquet', '')
-        parts = base_name.split('.')
-        if len(parts) < 3:
-            raise Exception(f"Filename format incorrect: {base_name}")
+    return intersection / union if union > 0 else 0.0
 
-        table_label, schema, table_name = parts[-3:]
-        
-        if df.empty:
-            raise Exception("DataFrame is empty")
-        
-        if 'prod_sys' not in df.columns:
-            raise Exception("prod_sys column not found")
-
-        df = safe_convert_dtypes(df)
-        
-        try:
-            grouped = df.groupby('prod_sys', observed=True)
-        except:
-            raise Exception("Failed to group by prod_sys")
-        
-        for prod_sys, group_df in grouped:
-            total_rows = len(group_df)
-            if total_rows == 0:
-                continue
-            
-            for col in group_df.columns:
-                result = process_single_column(col, group_df[col], total_rows, prod_sys, top_n)
-                if result is not None:
-                    result.update({
-                        'schema': schema,
-                        'table': table_name
-                    })
-                    results.append(result)
-        
-    except Exception as e:
-        raise Exception(str(e))
+def find_similar_groups_smart(unique_values, similarity_threshold=0.85):
+    """
+    Find similar values using windowed comparison.
+    Only checks nearby values (sorted alphabetically) to minimize comparisons.
+    """
+    if len(unique_values) == 0:
+        return {}
     
-    return results
-
-
-def convert_datetime_objects_safe(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert datetime objects to strings for compatibility."""
-    try:
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                # Check if column contains datetime objects using full sample
-                sample_data = df[col].dropna()
-                if not sample_data.empty:
-                    # Check a reasonable sample size for datetime detection
-                    check_size = min(1000, len(sample_data))
-                    has_datetime = sample_data.head(check_size).apply(
-                        lambda x: isinstance(x, (datetime.date, datetime.time, datetime.datetime))
-                    ).any()
-                    if has_datetime:
-                        df[col] = df[col].astype(str)
-        return df
-    except Exception:
-        return df
-
-
-# ---------------- Main Script ---------------- #
-def main():
-    input_folder = r"C:\Users\NULL\Desktop\pdf codes\DD"
-    parquet_files = glob(os.path.join(input_folder, "*.parquet"))
+    print(f"      Checking for typos among {len(unique_values)} unique values...")
     
-    if not parquet_files:
-        print("No parquet files found!")
-        return
+    groups = {}
+    sorted_values = sorted(unique_values, key=lambda x: (len(x), x))
     
-    all_stats = []
-    failed_files = []
-    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    total_comparisons = 0
+    found_groups = 0
+    check_window = 50  # Only compare with next 50 values
     
-    for file_path in parquet_files:
-        print(f"Processing: {file_path}")
-        try:
-            stats = analyze_parquet_file_safe(file_path)
-            if stats:
-                all_stats.extend(stats)
-        except Exception as e:
-            failed_files.append({
-                'file_path': file_path,
-                'error': str(e),
-                'date': today_date
-            })
+    for i, val1 in enumerate(sorted_values):
+        if val1 in groups:
             continue
+        
+        if i > 0 and i % 5000 == 0:
+            print(f"      Progress: {i}/{len(sorted_values)} ({total_comparisons} comparisons, {found_groups} groups)")
+        
+        len1 = len(val1)
+        max_len_diff = 2  # Maximum character difference
+        similar_found = False
+        
+        # Only check a small window of nearby values
+        for j in range(i+1, min(i+1+check_window, len(sorted_values))):
+            val2 = sorted_values[j]
+            
+            if val2 in groups:
+                continue
+            
+            len2 = len(val2)
+            
+            # Stop if we've exceeded length range
+            if len2 > len1 + max_len_diff:
+                break
+            
+            if abs(len1 - len2) > max_len_diff:
+                continue
+            
+            total_comparisons += 1
+            
+            # Calculate similarity
+            if len1 == len2:
+                diffs = sum(1 for c1, c2 in zip(val1, val2) if c1 != c2)
+                similarity = 1 - (diffs / len1)
+            else:
+                ngrams1 = create_ngram_set(val1, n=3)
+                ngrams2 = create_ngram_set(val2, n=3)
+                similarity = jaccard_similarity(ngrams1, ngrams2)
+            
+            if similarity >= similarity_threshold:
+                groups[val2] = val1
+                similar_found = True
+                found_groups += 1
+        
+        if not similar_found:
+            groups[val1] = val1
+    
+    print(f"      Completed: {total_comparisons:,} comparisons, {found_groups} similar pairs found")
+    
+    return groups
 
-    if failed_files:
-        failed_df = pd.DataFrame(failed_files)
-        failed_output = r'C:/Users/NULL/Desktop/pdf codes/DD/failed_files_' + today_date + '.parquet'
-        failed_df.to_parquet(failed_output, index=False, engine='pyarrow')
-        print(f"Failed files report saved: {failed_output}")
+def analyze_column_streaming(file_path, column_name, file_type, similarity_threshold=0.85, max_memory_values=50000):
+    """
+    Analyze a single column by:
+    1. Extract distinct values
+    2. Standardize distinct values
+    3. Find similar groups
+    4. Generate mapping report
+    """
+    print(f"\n   Column: {column_name}")
+    
+    # Phase 1: Get distinct values from file
+    print(f"      [1/4] Extracting distinct values...")
+    
+    original_value_counter = Counter()
+    row_count = 0
+    
+    if file_type == 'csv':
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.DictReader(f)
+            
+            if column_name not in reader.fieldnames:
+                print(f"      ERROR: Column '{column_name}' not found")
+                return []
+            
+            for row in reader:
+                value = row.get(column_name, '')
+                if value:
+                    original_value_counter[value] += 1
+                
+                row_count += 1
+                if row_count % 10000 == 0:
+                    print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
+    
+    elif file_type == 'parquet':
+        try:
+            import pyarrow.parquet as pq
+            parquet_file = pq.ParquetFile(file_path)
+            
+            for batch in parquet_file.iter_batches(batch_size=10000):
+                if column_name not in batch.schema.names:
+                    print(f"      ERROR: Column '{column_name}' not found")
+                    return []
+                
+                column_data = batch.column(column_name).to_pylist()
+                
+                for value in column_data:
+                    if value:
+                        original_value_counter[value] += 1
+                    row_count += 1
+                
+                if row_count % 10000 == 0:
+                    print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
+                
+                del column_data
+                gc.collect()
+        except ImportError:
+            print("      ERROR: PyArrow not installed (pip install pyarrow)")
+            return []
+    
+    elif file_type in ['xlsx', 'xls']:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            ws = wb.active
+            
+            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            if column_name not in headers:
+                print(f"      ERROR: Column '{column_name}' not found")
+                return []
+            
+            col_idx = headers.index(column_name)
+            
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
+                if col_idx < len(row):
+                    value = row[col_idx]
+                    if value:
+                        original_value_counter[value] += 1
+                    row_count += 1
+                    
+                    if row_count % 10000 == 0:
+                        print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
+            
+            wb.close()
+        except ImportError:
+            print("      ERROR: openpyxl not installed (pip install openpyxl)")
+            return []
+    
+    print(f"      Scanned {row_count:,} rows, found {len(original_value_counter)} distinct values")
+    
+    if len(original_value_counter) == 0:
+        print("      No data found in column")
+        return []
+    
+    # Phase 2: Standardize only the distinct values
+    print(f"      [2/4] Standardizing {len(original_value_counter)} distinct values...")
+    
+    std_to_count = Counter()
+    std_to_orig = defaultdict(set)
+    
+    for original_value, count in original_value_counter.items():
+        std_value = standardize_value(original_value)
+        if std_value:
+            std_to_count[std_value] += count
+            std_to_orig[std_value].add(str(original_value))
+    
+    reduction = len(original_value_counter) - len(std_to_count)
+    print(f"      After standardization: {len(std_to_count)} unique values (removed {reduction} duplicates)")
+    
+    del original_value_counter
+    gc.collect()
+    
+    if len(std_to_count) > max_memory_values:
+        print(f"      WARNING: {len(std_to_count)} unique values is very large")
+        proceed = input("      Continue? (y/n): ").strip().lower()
+        if proceed != 'y':
+            return []
+    
+    # Phase 3: Find similar groups
+    print(f"      [3/4] Finding similar groups...")
+    unique_vals = list(std_to_count.keys())
+    similar_groups = find_similar_groups_smart(unique_vals, similarity_threshold)
+    
+    # Phase 4: Build report
+    print(f"      [4/4] Building report...")
+    report_data = []
+    
+    # Group by suggested value
+    suggested_to_variants = defaultdict(list)
+    for std_value in std_to_count.keys():
+        suggested_value = similar_groups.get(std_value, std_value)
+        suggested_to_variants[suggested_value].append(std_value)
+    
+    # Generate report rows
+    for std_value, count in std_to_count.items():
+        original_variants = std_to_orig[std_value]
+        suggested_value = similar_groups.get(std_value, std_value)
+        
+        # Analysis metrics
+        num_original_variants = len(original_variants)
+        has_mixed_case = len([v for v in original_variants if v != v.lower()]) > 0
+        has_whitespace_issues = len([v for v in original_variants if v != v.strip() or '  ' in v]) > 0
+        is_sensitive = std_value in original_variants
+        
+        # Determine flag and action
+        if suggested_value != std_value:
+            similar_flag = "YES - REVIEW"
+            action = "MAP TO SUGGESTED"
+        else:
+            variants_in_group = suggested_to_variants[std_value]
+            if len(variants_in_group) > 1:
+                similar_flag = f"GROUP LEADER ({len(variants_in_group)} variants)"
+                action = "KEEP AS STANDARD"
+            else:
+                similar_flag = "UNIQUE"
+                action = "NO CHANGE"
+        
+        if is_sensitive:
+            action = "SENSITIVE - NO CHANGE"
+        
+        report_data.append({
+            'column': column_name,
+            'standardized_value': std_value,
+            'suggested_value': suggested_value,
+            'count': count,
+            'num_original_variants': num_original_variants,
+            'original_values': ' | '.join(sorted(original_variants)),
+            'has_mixed_case': 'YES' if has_mixed_case else 'NO',
+            'has_whitespace_issues': 'YES' if has_whitespace_issues else 'NO',
+            'is_sensitive': 'YES' if is_sensitive else 'NO',
+            'similar_flag': similar_flag,
+            'action': action,
+            'length': len(std_value)
+        })
+    
+    print(f"      Complete: {len(report_data)} entries generated")
+    
+    del std_to_count, std_to_orig, similar_groups
+    gc.collect()
+    
+    return report_data
 
-    if not all_stats:
-        print("No data to process!")
+def select_file(title, filetypes):
+    """Open file dialog to select input file."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes)
+    root.destroy()
+    return file_path
+
+def select_save_file(title, defaultextension, filetypes):
+    """Open file dialog to save output file."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    file_path = filedialog.asksaveasfilename(
+        title=title, 
+        defaultextension=defaultextension,
+        filetypes=filetypes
+    )
+    root.destroy()
+    return file_path
+
+def get_column_names(file_path, file_type):
+    """Extract column names without loading entire file."""
+    if file_type == 'csv':
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.DictReader(f)
+            return reader.fieldnames
+    
+    elif file_type == 'parquet':
+        try:
+            import pyarrow.parquet as pq
+            schema = pq.read_schema(file_path)
+            return schema.names
+        except ImportError:
+            return None
+    
+    elif file_type in ['xlsx', 'xls']:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            ws = wb.active
+            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            wb.close()
+            return headers
+        except ImportError:
+            return None
+    
+    return None
+
+def save_report(report_data, file_path):
+    """Save report to specified format."""
+    ext = Path(file_path).suffix.lower()
+    
+    if ext == '.csv':
+        if not report_data:
+            return
+        
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = report_data[0].keys()
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(report_data)
+    
+    elif ext == '.parquet':
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            table = pa.Table.from_pylist(report_data)
+            pq.write_table(table, file_path)
+        except ImportError:
+            print("ERROR: PyArrow not installed")
+    
+    elif ext in ['.xlsx', '.xls']:
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            
+            if report_data:
+                headers = list(report_data[0].keys())
+                ws.append(headers)
+                
+                for row in report_data:
+                    ws.append([row[h] for h in headers])
+            
+            wb.save(file_path)
+        except ImportError:
+            print("ERROR: openpyxl not installed")
+
+def main():
+    print("=" * 70)
+    print("DATA STANDARDIZATION TOOL")
+    print("=" * 70)
+    
+    # Step 1: Select input file
+    filetypes = [
+        ('CSV files', '*.csv'),
+        ('Parquet files', '*.parquet'),
+        ('Excel files', '*.xlsx *.xls'),
+        ('All files', '*.*')
+    ]
+    
+    print("\n[STEP 1] Select input file")
+    input_file = select_file("Select Input File", filetypes)
+    
+    if not input_file:
+        print("No file selected. Exiting.")
         return
     
+    file_path = Path(input_file)
+    file_type = file_path.suffix.lower().replace('.', '')
+    print(f"Selected: {file_path.name} ({file_type.upper()})")
+    
+    # Step 2: Read columns
+    print("\n[STEP 2] Reading file structure")
+    columns = get_column_names(input_file, file_type)
+    
+    if not columns:
+        print("ERROR: Could not read file. Check format or install dependencies.")
+        return
+    
+    print(f"Found {len(columns)} columns: {', '.join(columns)}")
+    
+    # Step 3: Select columns to analyze
+    print("\n[STEP 3] Select columns to analyze")
+    print("Enter column names separated by commas, or 'all' for all columns")
+    
+    col_input = input("Columns: ").strip()
+    
+    if col_input.lower() == 'all':
+        columns_to_analyze = columns
+    else:
+        columns_to_analyze = [c.strip() for c in col_input.split(',')]
+        invalid_cols = [c for c in columns_to_analyze if c not in columns]
+        if invalid_cols:
+            print(f"ERROR: Invalid columns: {', '.join(invalid_cols)}")
+            return
+    
+    print(f"Will analyze {len(columns_to_analyze)} column(s)")
+    
+    # Step 4: Set similarity threshold
+    print("\n[STEP 4] Set similarity threshold")
+    print("Range: 0.0 to 1.0 (default: 0.85)")
+    print("Higher = stricter matching, Lower = more fuzzy matching")
+    
+    threshold_input = input("Threshold (press Enter for 0.85): ").strip()
+    
     try:
-        df_stats = pd.DataFrame(all_stats)
-        df_stats = df_stats.sort_values(by=['prod_sys', 'schema', 'table'])
-        df_stats = convert_datetime_objects_safe(df_stats)
-        df_stats["most_frequent_value"] = df_stats["most_frequent_value"].astype(str)
-
-        output_file = r'C:/Users/NULL/Desktop/pdf codes/DD/parquet_stats_report.parquet'
-        df_stats.to_parquet(output_file, index=False, engine='pyarrow')
-        
-        print("Analysis complete. Report saved.")
-        
-    except Exception:
-        print("Error creating final report.")
-
+        similarity_threshold = float(threshold_input) if threshold_input else 0.85
+        if not 0 <= similarity_threshold <= 1:
+            raise ValueError
+    except ValueError:
+        print("Invalid input. Using default: 0.85")
+        similarity_threshold = 0.85
+    
+    print(f"Using threshold: {similarity_threshold}")
+    
+    # Step 5: Analyze columns
+    print("\n[STEP 5] Analyzing columns")
+    all_reports = []
+    
+    for idx, col in enumerate(columns_to_analyze, 1):
+        print(f"\n--- Analyzing {idx}/{len(columns_to_analyze)} ---")
+        report = analyze_column_streaming(input_file, col, file_type, similarity_threshold)
+        all_reports.extend(report)
+        gc.collect()
+    
+    if not all_reports:
+        print("\nNo data to report.")
+        return
+    
+    # Sort and summarize
+    print("\n[STEP 6] Generating summary")
+    
+    action_priority = {
+        'MAP TO SUGGESTED': 1,
+        'GROUP LEADER': 2,
+        'KEEP AS STANDARD': 2,
+        'SENSITIVE - NO CHANGE': 3,
+        'NO CHANGE': 4
+    }
+    
+    all_reports.sort(key=lambda x: (
+        x['column'],
+        action_priority.get(x['action'], 99),
+        -x['count']
+    ))
+    
+    needs_mapping = sum(1 for r in all_reports if r['action'] == 'MAP TO SUGGESTED')
+    group_leaders = sum(1 for r in all_reports if 'GROUP LEADER' in r['action'])
+    sensitive_values = sum(1 for r in all_reports if r['is_sensitive'] == 'YES')
+    
+    print(f"Total distinct values: {len(all_reports)}")
+    print(f"  - Need mapping: {needs_mapping}")
+    print(f"  - Group leaders: {group_leaders}")
+    print(f"  - Sensitive values: {sensitive_values}")
+    
+    # Step 6: Choose output format
+    print("\n[STEP 7] Choose output format")
+    print("1 = CSV")
+    print("2 = Excel")
+    print("3 = Parquet")
+    
+    format_choice = input("Choice (1/2/3): ").strip()
+    
+    if format_choice == '1':
+        default_ext = '.csv'
+        file_types = [('CSV files', '*.csv')]
+    elif format_choice == '2':
+        default_ext = '.xlsx'
+        file_types = [('Excel files', '*.xlsx')]
+    elif format_choice == '3':
+        default_ext = '.parquet'
+        file_types = [('Parquet files', '*.parquet')]
+    else:
+        print("Invalid choice. Using CSV.")
+        default_ext = '.csv'
+        file_types = [('CSV files', '*.csv')]
+    
+    file_types.append(('All files', '*.*'))
+    
+    output_file = select_save_file("Save Report", default_ext, file_types)
+    
+    if not output_file:
+        print("No output file selected. Exiting.")
+        return
+    
+    # Save report
+    print("\n[STEP 8] Saving report")
+    try:
+        save_report(all_reports, output_file)
+        print(f"Report saved: {Path(output_file).name}")
+    except Exception as e:
+        print(f"ERROR saving file: {e}")
+        return
+    
+    print("\n" + "=" * 70)
+    print("COMPLETE")
+    print("=" * 70)
+    print("\nReport columns:")
+    print("  • standardized_value: Cleaned distinct value")
+    print("  • suggested_value: Recommended mapping")
+    print("  • action: MAP TO SUGGESTED / KEEP AS STANDARD / NO CHANGE")
+    print("  • is_sensitive: Values preserved (e.g., 'not found')")
+    print("\nNext steps:")
+    print("  1. Filter rows where action = 'MAP TO SUGGESTED'")
+    print("  2. Review suggested mappings")
+    print("  3. Apply mappings to your dataset")
 
 if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pandas as pd
-import numpy as np
-import pyodbc
-from typing import List, Dict, Any, Optional, Tuple
-import logging
-import re
-from dataclasses import dataclass
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-@dataclass
-class ColumnMetadata:
-    name: str
-    data_type: str
-    is_nullable: bool
-    is_string_type: bool
-    escaped_name: str
-
-class DremioODBCStatsGenerator:
-    def __init__(self, host: str, port: str, uid: str, pwd: str, driver: str = 'Dremio Connector'):
-        """
-        Initialize ODBC connection to Dremio
-        
-        Args:
-            host: Dremio server hostname
-            port: Dremio port (typically 31010)
-            uid: Username
-            pwd: Password
-            driver: ODBC driver name (default: 'Dremio Connector')
-        """
-        self.connection_string = f"""
-DRIVER={{{driver}}};
-ConnectionType=Direct;
-HOST={host};
-PORT={port};
-AuthenticationType=Plain;
-UID={uid};
-PWD={pwd};
-SSL=1;
-SSLVerifyServer=1;
-UseSystemTrustStore=1;
-TLSMinVersion=TLSv1.2;
-"""
-        
-    def get_connection(self):
-        """Get ODBC connection with autocommit enabled for Dremio"""
-        conn = pyodbc.connect(self.connection_string)
-        conn.autocommit = True  # Dremio doesn't support transactions
-        return conn
-    
-    def get_dataset_metadata(self, schema_name: str, table_name: str) -> List[ColumnMetadata]:
-        """
-        Get column metadata using a LIMIT query to understand the dataset structure
-        """
-        logger.info(f"Getting metadata for {schema_name}.{table_name}")
-        
-        # First, get a small sample to understand the structure
-        sample_query = f"SELECT * FROM {schema_name}.{table_name} LIMIT 1"
-        
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(sample_query)
-            
-            # Get column information from cursor description
-            columns_metadata = []
-            for col_desc in cursor.description:
-                col_name = col_desc[0]
-                col_type = col_desc[1]  # This is the Python type
-                
-                # Map Python types to SQL types (approximate)
-                type_mapping = {
-                    str: 'VARCHAR',
-                    int: 'INTEGER',
-                    float: 'DOUBLE',
-                    bool: 'BOOLEAN',
-                    bytes: 'VARBINARY'
-                }
-                
-                sql_type = type_mapping.get(col_type, 'VARCHAR')
-                
-                # Determine if it's a string type
-                is_string = col_type == str or 'CHAR' in str(sql_type).upper() or 'TEXT' in str(sql_type).upper()
-                
-                # Create escaped column name for special characters
-                escaped_name = f'"{col_name}"' if any(c in col_name for c in [' ', '-', '.', '(', ')', '[', ']']) else col_name
-                
-                columns_metadata.append(ColumnMetadata(
-                    name=col_name,
-                    data_type=sql_type,
-                    is_nullable=True,  # We'll assume nullable for now
-                    is_string_type=is_string,
-                    escaped_name=escaped_name
-                ))
-            
-            cursor.close()
-            
-        finally:
-            conn.close()
-            
-        logger.info(f"Found {len(columns_metadata)} columns")
-        return columns_metadata
-    
-    def build_optimized_stats_query(self, schema_name: str, table_name: str, 
-                                  columns_metadata: List[ColumnMetadata]) -> str:
-        """
-        Build a single optimized query to get all basic statistics at once
-        """
-        logger.info("Building optimized statistics query")
-        
-        select_parts = ["COUNT(*) as total_rows"]
-        
-        for col in columns_metadata:
-            col_stats = [
-                f"COUNT({col.escaped_name}) as {col.name}_non_null_count",
-                f"COUNT(*) - COUNT({col.escaped_name}) as {col.name}_null_count", 
-                f"COUNT(DISTINCT {col.escaped_name}) as {col.name}_unique_count"
-            ]
-            
-            # Add special character count for string columns
-            if col.is_string_type:
-                col_stats.append(
-                    f"SUM(CASE WHEN {col.escaped_name} IS NOT NULL AND REGEXP_LIKE({col.escaped_name}, '[^a-zA-Z0-9\\\\s]') THEN 1 ELSE 0 END) as {col.name}_special_char_count"
-                )
-            
-            select_parts.extend(col_stats)
-        
-        query = f"SELECT {', '.join(select_parts)} FROM {schema_name}.{table_name}"
-        return query
-    
-    def get_most_frequent_values(self, schema_name: str, table_name: str, 
-                               columns_metadata: List[ColumnMetadata]) -> Dict[str, Tuple[Any, int]]:
-        """
-        Get most frequent values for all columns using efficient queries
-        """
-        logger.info("Getting most frequent values")
-        
-        most_frequent = {}
-        
-        # Process columns in smaller batches to avoid query complexity issues
-        batch_size = 5
-        for i in range(0, len(columns_metadata), batch_size):
-            batch_columns = columns_metadata[i:i + batch_size]
-            
-            # Build union query for this batch
-            union_parts = []
-            for col in batch_columns:
-                union_parts.append(f"""
-                    SELECT '{col.name}' as column_name, 
-                           CAST({col.escaped_name} AS VARCHAR) as value, 
-                           COUNT(*) as frequency
-                    FROM {schema_name}.{table_name}
-                    WHERE {col.escaped_name} IS NOT NULL
-                    GROUP BY {col.escaped_name}
-                """)
-            
-            if union_parts:
-                # Get top value per column using window functions
-                batch_query = f"""
-                WITH ranked_values AS (
-                    SELECT column_name, value, frequency,
-                           ROW_NUMBER() OVER (PARTITION BY column_name ORDER BY frequency DESC) as rn
-                    FROM ({' UNION ALL '.join(union_parts)}) combined
-                )
-                SELECT column_name, value, frequency
-                FROM ranked_values 
-                WHERE rn = 1
-                """
-                
-                try:
-                    conn = self.get_connection()
-                    try:
-                        cursor = conn.cursor()
-                        cursor.execute(batch_query)
-                        
-                        for row in cursor.fetchall():
-                            col_name, value, frequency = row
-                            most_frequent[col_name] = (value, frequency)
-                        
-                        cursor.close()
-                    finally:
-                        conn.close()
-                        
-                except Exception as e:
-                    logger.warning(f"Error getting most frequent values for batch: {e}")
-                    # Fallback to individual queries
-                    for col in batch_columns:
-                        try:
-                            individual_query = f"""
-                                SELECT {col.escaped_name} as value, COUNT(*) as frequency
-                                FROM {schema_name}.{table_name}
-                                WHERE {col.escaped_name} IS NOT NULL
-                                GROUP BY {col.escaped_name}
-                                ORDER BY frequency DESC
-                                LIMIT 1
-                            """
-                            
-                            conn = self.get_connection()
-                            try:
-                                cursor = conn.cursor()
-                                cursor.execute(individual_query)
-                                result = cursor.fetchone()
-                                
-                                if result:
-                                    most_frequent[col.name] = (result[0], result[1])
-                                else:
-                                    most_frequent[col.name] = (None, 0)
-                                
-                                cursor.close()
-                            finally:
-                                conn.close()
-                                
-                        except Exception as e2:
-                            logger.warning(f"Error getting most frequent value for {col.name}: {e2}")
-                            most_frequent[col.name] = (None, 0)
-        
-        return most_frequent
-    
-    def generate_dataset_stats(self, schema_name: str, table_name: str) -> pd.DataFrame:
-        """
-        Generate comprehensive statistics for a dataset
-        """
-        logger.info(f"Generating comprehensive stats for {schema_name}.{table_name}")
-        
-        # Step 1: Get metadata
-        columns_metadata = self.get_dataset_metadata(schema_name, table_name)
-        
-        # Step 2: Execute optimized stats query
-        stats_query = self.build_optimized_stats_query(schema_name, table_name, columns_metadata)
-        logger.info("Executing main statistics query")
-        
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(stats_query)
-            stats_result = cursor.fetchone()
-            cursor.close()
-        finally:
-            conn.close()
-        
-        total_rows = stats_result[0]
-        logger.info(f"Total rows: {total_rows}")
-        
-        # Step 3: Get most frequent values
-        most_frequent_values = self.get_most_frequent_values(schema_name, table_name, columns_metadata)
-        
-        # Step 4: Build results DataFrame
-        results = []
-        stats_idx = 1  # Start after total_rows
-        
-        for col in columns_metadata:
-            # Extract stats from the main query result
-            non_null_count = stats_result[stats_idx]
-            null_count = stats_result[stats_idx + 1]
-            unique_count = stats_result[stats_idx + 2]
-            
-            if col.is_string_type:
-                special_char_count = stats_result[stats_idx + 3]
-                stats_idx += 4
-            else:
-                special_char_count = 0
-                stats_idx += 3
-            
-            # Calculate percentages
-            null_percent = (null_count / total_rows * 100) if total_rows > 0 else 0
-            unique_percent = (unique_count / non_null_count * 100) if non_null_count > 0 else 0
-            duplicate_count = max(0, non_null_count - unique_count)
-            duplicate_percent = (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0
-            special_char_percent = (special_char_count / total_rows * 100) if total_rows > 0 else 0
-            
-            # Get most frequent value
-            most_freq_val, freq_count = most_frequent_values.get(col.name, (None, 0))
-            
-            # Build result row
-            row_data = {
-                'Column': col.name,
-                'Data Type': col.data_type,
-                'Nullable': 'YES' if col.is_nullable else 'NO',
-                'Default Value': 'NULL',
-                'Total Rows': total_rows,
-                'Null Count': null_count,
-                'Null %': round(null_percent, 2),
-                'Non-Null Count': non_null_count,
-                'Unique Count': unique_count,
-                'Unique %': round(unique_percent, 2),
-                'Duplicate Count': duplicate_count,
-                'Duplicate %': round(duplicate_percent, 2),
-                'Special Char Count': special_char_count,
-                'Special Char %': round(special_char_percent, 2),
-                'Most Frequent Value': str(most_freq_val) if most_freq_val is not None else 'NULL',
-                'Frequency Count': freq_count
-            }
-            
-            results.append(row_data)
-            logger.info(f"Processed column: {col.name}")
-        
-        return pd.DataFrame(results)
-    
-    def generate_multiple_datasets_stats(self, datasets: List[Tuple[str, str]], 
-                                       output_file: Optional[str] = None) -> Dict[str, pd.DataFrame]:
-        """
-        Generate stats for multiple datasets efficiently
-        """
-        all_stats = {}
-        
-        for schema_name, table_name in datasets:
-            dataset_key = f"{schema_name}.{table_name}"
-            logger.info(f"Processing dataset: {dataset_key}")
-            
-            try:
-                stats_df = self.generate_dataset_stats(schema_name, table_name)
-                all_stats[dataset_key] = stats_df
-                logger.info(f"Successfully processed {dataset_key} - {len(stats_df)} columns")
-                
-            except Exception as e:
-                logger.error(f"Error processing {dataset_key}: {e}")
-                continue
-        
-        # Save to Excel if specified
-        if output_file and all_stats:
-            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                for dataset_name, df in all_stats.items():
-                    # Sanitize sheet name for Excel
-                    sheet_name = re.sub(r'[^\w\s-]', '_', dataset_name)[:31]
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-            
-            logger.info(f"Results saved to {output_file}")
-        
-        return all_stats
-
-def main():
-    """Example usage"""
-    # Dremio connection parameters - update with your actual details
-    host = 'your.dremio.server.com'
-    port = '31010'
-    uid = 'your_username'  # Add this variable
-    pwd = 'your_password'
-    driver = 'Dremio Connector'
-    
-    # Initialize the stats generator
-    stats_generator = DremioODBCStatsGenerator(host, port, uid, pwd, driver)
-    
-    # Example 1: Single dataset analysis
     try:
-        logger.info("Starting single dataset analysis")
-        single_stats = stats_generator.generate_dataset_stats("your_schema", "your_table")
-        
-        print("\nDataset Statistics Summary:")
-        print(f"Total columns analyzed: {len(single_stats)}")
-        print(f"Total rows in dataset: {single_stats['Total Rows'].iloc[0] if not single_stats.empty else 0}")
-        
-        # Save results
-        single_stats.to_csv("dataset_statistics.csv", index=False)
-        logger.info("Single dataset results saved to dataset_statistics.csv")
-        
-        # Display sample results
-        print("\nFirst 5 columns statistics:")
-        print(single_stats.head().to_string(index=False))
-        
+        main()
+    except KeyboardInterrupt:
+        print("\n\nCancelled by user")
     except Exception as e:
-        logger.error(f"Error with single dataset analysis: {e}")
-    
-    # Example 2: Multiple datasets analysis
-    datasets_to_analyze = [
-        ("schema1", "customers"),
-        ("schema1", "orders"), 
-        ("schema2", "products"),
-        ("schema2", "inventory")
-    ]
-    
-    try:
-        logger.info("Starting multiple datasets analysis")
-        multiple_stats = stats_generator.generate_multiple_datasets_stats(
-            datasets_to_analyze,
-            output_file="all_datasets_statistics.xlsx"
-        )
-        
-        # Print summary for each dataset
-        print("\nMultiple Datasets Summary:")
-        for dataset_name, df in multiple_stats.items():
-            total_rows = df['Total Rows'].iloc[0] if not df.empty else 0
-            null_columns = len(df[df['Null %'] > 50])  # Columns with >50% nulls
-            
-            print(f"\nDataset: {dataset_name}")
-            print(f"  - Columns: {len(df)}")
-            print(f"  - Rows: {total_rows:,}")
-            print(f"  - High null columns (>50%): {null_columns}")
-            
-    except Exception as e:
-        logger.error(f"Error with multiple datasets analysis: {e}")
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pandas as pd
-import numpy as np
-import pyodbc
-from typing import List, Dict, Any, Optional, Tuple
-import logging
-import re
-from dataclasses import dataclass
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-@dataclass
-class ColumnMetadata:
-    name: str
-    data_type: str
-    is_nullable: bool
-    is_string_type: bool
-    escaped_name: str
-
-class DremioODBCStatsGenerator:
-    def __init__(self, connection_string: str):
-        """
-        Initialize ODBC connection to Dremio
-        
-        Args:
-            connection_string: ODBC connection string
-            Example: "DRIVER={Dremio ODBC Driver 64-bit};HOST=localhost;PORT=31010;UID=username;PWD=password;AuthenticationType=Plain"
-        """
-        self.connection_string = connection_string
-        
-    def get_connection(self):
-        """Get ODBC connection"""
-        return pyodbc.connect(self.connection_string)
-    
-    def get_dataset_metadata(self, schema_name: str, table_name: str) -> List[ColumnMetadata]:
-        """
-        Get column metadata using a LIMIT query to understand the dataset structure
-        """
-        logger.info(f"Getting metadata for {schema_name}.{table_name}")
-        
-        # First, get a small sample to understand the structure
-        sample_query = f"SELECT * FROM {schema_name}.{table_name} LIMIT 1"
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sample_query)
-            
-            # Get column information from cursor description
-            columns_metadata = []
-            for col_desc in cursor.description:
-                col_name = col_desc[0]
-                col_type = col_desc[1]  # This is the Python type
-                
-                # Map Python types to SQL types (approximate)
-                type_mapping = {
-                    str: 'VARCHAR',
-                    int: 'INTEGER',
-                    float: 'DOUBLE',
-                    bool: 'BOOLEAN',
-                    bytes: 'VARBINARY'
-                }
-                
-                sql_type = type_mapping.get(col_type, 'VARCHAR')
-                
-                # Determine if it's a string type
-                is_string = col_type == str or 'CHAR' in str(sql_type).upper() or 'TEXT' in str(sql_type).upper()
-                
-                # Create escaped column name for special characters
-                escaped_name = f'"{col_name}"' if any(c in col_name for c in [' ', '-', '.', '(', ')', '[', ']']) else col_name
-                
-                columns_metadata.append(ColumnMetadata(
-                    name=col_name,
-                    data_type=sql_type,
-                    is_nullable=True,  # We'll assume nullable for now
-                    is_string_type=is_string,
-                    escaped_name=escaped_name
-                ))
-            
-            cursor.close()
-            
-        logger.info(f"Found {len(columns_metadata)} columns")
-        return columns_metadata
-    
-    def build_optimized_stats_query(self, schema_name: str, table_name: str, 
-                                  columns_metadata: List[ColumnMetadata]) -> str:
-        """
-        Build a single optimized query to get all basic statistics at once
-        """
-        logger.info("Building optimized statistics query")
-        
-        select_parts = ["COUNT(*) as total_rows"]
-        
-        for col in columns_metadata:
-            col_stats = [
-                f"COUNT({col.escaped_name}) as {col.name}_non_null_count",
-                f"COUNT(*) - COUNT({col.escaped_name}) as {col.name}_null_count", 
-                f"COUNT(DISTINCT {col.escaped_name}) as {col.name}_unique_count"
-            ]
-            
-            # Add special character count for string columns
-            if col.is_string_type:
-                col_stats.append(
-                    f"SUM(CASE WHEN {col.escaped_name} IS NOT NULL AND REGEXP_LIKE({col.escaped_name}, '[^a-zA-Z0-9\\\\s]') THEN 1 ELSE 0 END) as {col.name}_special_char_count"
-                )
-            
-            select_parts.extend(col_stats)
-        
-        query = f"SELECT {', '.join(select_parts)} FROM {schema_name}.{table_name}"
-        return query
-    
-    def get_most_frequent_values(self, schema_name: str, table_name: str, 
-                               columns_metadata: List[ColumnMetadata]) -> Dict[str, Tuple[Any, int]]:
-        """
-        Get most frequent values for all columns using efficient queries
-        """
-        logger.info("Getting most frequent values")
-        
-        most_frequent = {}
-        
-        # Process columns in smaller batches to avoid query complexity issues
-        batch_size = 5
-        for i in range(0, len(columns_metadata), batch_size):
-            batch_columns = columns_metadata[i:i + batch_size]
-            
-            # Build union query for this batch
-            union_parts = []
-            for col in batch_columns:
-                union_parts.append(f"""
-                    SELECT '{col.name}' as column_name, 
-                           CAST({col.escaped_name} AS VARCHAR) as value, 
-                           COUNT(*) as frequency
-                    FROM {schema_name}.{table_name}
-                    WHERE {col.escaped_name} IS NOT NULL
-                    GROUP BY {col.escaped_name}
-                """)
-            
-            if union_parts:
-                # Get top value per column using window functions
-                batch_query = f"""
-                WITH ranked_values AS (
-                    SELECT column_name, value, frequency,
-                           ROW_NUMBER() OVER (PARTITION BY column_name ORDER BY frequency DESC) as rn
-                    FROM ({' UNION ALL '.join(union_parts)}) combined
-                )
-                SELECT column_name, value, frequency
-                FROM ranked_values 
-                WHERE rn = 1
-                """
-                
-                try:
-                    with self.get_connection() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute(batch_query)
-                        
-                        for row in cursor.fetchall():
-                            col_name, value, frequency = row
-                            most_frequent[col_name] = (value, frequency)
-                        
-                        cursor.close()
-                        
-                except Exception as e:
-                    logger.warning(f"Error getting most frequent values for batch: {e}")
-                    # Fallback to individual queries
-                    for col in batch_columns:
-                        try:
-                            individual_query = f"""
-                                SELECT {col.escaped_name} as value, COUNT(*) as frequency
-                                FROM {schema_name}.{table_name}
-                                WHERE {col.escaped_name} IS NOT NULL
-                                GROUP BY {col.escaped_name}
-                                ORDER BY frequency DESC
-                                LIMIT 1
-                            """
-                            
-                            with self.get_connection() as conn:
-                                cursor = conn.cursor()
-                                cursor.execute(individual_query)
-                                result = cursor.fetchone()
-                                
-                                if result:
-                                    most_frequent[col.name] = (result[0], result[1])
-                                else:
-                                    most_frequent[col.name] = (None, 0)
-                                
-                                cursor.close()
-                                
-                        except Exception as e2:
-                            logger.warning(f"Error getting most frequent value for {col.name}: {e2}")
-                            most_frequent[col.name] = (None, 0)
-        
-        return most_frequent
-    
-    def generate_dataset_stats(self, schema_name: str, table_name: str) -> pd.DataFrame:
-        """
-        Generate comprehensive statistics for a dataset
-        """
-        logger.info(f"Generating comprehensive stats for {schema_name}.{table_name}")
-        
-        # Step 1: Get metadata
-        columns_metadata = self.get_dataset_metadata(schema_name, table_name)
-        
-        # Step 2: Execute optimized stats query
-        stats_query = self.build_optimized_stats_query(schema_name, table_name, columns_metadata)
-        logger.info("Executing main statistics query")
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(stats_query)
-            stats_result = cursor.fetchone()
-            cursor.close()
-        
-        total_rows = stats_result[0]
-        logger.info(f"Total rows: {total_rows}")
-        
-        # Step 3: Get most frequent values
-        most_frequent_values = self.get_most_frequent_values(schema_name, table_name, columns_metadata)
-        
-        # Step 4: Build results DataFrame
-        results = []
-        stats_idx = 1  # Start after total_rows
-        
-        for col in columns_metadata:
-            # Extract stats from the main query result
-            non_null_count = stats_result[stats_idx]
-            null_count = stats_result[stats_idx + 1]
-            unique_count = stats_result[stats_idx + 2]
-            
-            if col.is_string_type:
-                special_char_count = stats_result[stats_idx + 3]
-                stats_idx += 4
-            else:
-                special_char_count = 0
-                stats_idx += 3
-            
-            # Calculate percentages
-            null_percent = (null_count / total_rows * 100) if total_rows > 0 else 0
-            unique_percent = (unique_count / non_null_count * 100) if non_null_count > 0 else 0
-            duplicate_count = max(0, non_null_count - unique_count)
-            duplicate_percent = (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0
-            special_char_percent = (special_char_count / total_rows * 100) if total_rows > 0 else 0
-            
-            # Get most frequent value
-            most_freq_val, freq_count = most_frequent_values.get(col.name, (None, 0))
-            
-            # Build result row
-            row_data = {
-                'Column': col.name,
-                'Data Type': col.data_type,
-                'Nullable': 'YES' if col.is_nullable else 'NO',
-                'Default Value': 'NULL',
-                'Total Rows': total_rows,
-                'Null Count': null_count,
-                'Null %': round(null_percent, 2),
-                'Non-Null Count': non_null_count,
-                'Unique Count': unique_count,
-                'Unique %': round(unique_percent, 2),
-                'Duplicate Count': duplicate_count,
-                'Duplicate %': round(duplicate_percent, 2),
-                'Special Char Count': special_char_count,
-                'Special Char %': round(special_char_percent, 2),
-                'Most Frequent Value': str(most_freq_val) if most_freq_val is not None else 'NULL',
-                'Frequency Count': freq_count
-            }
-            
-            results.append(row_data)
-            logger.info(f"Processed column: {col.name}")
-        
-        return pd.DataFrame(results)
-    
-    def generate_multiple_datasets_stats(self, datasets: List[Tuple[str, str]], 
-                                       output_file: Optional[str] = None) -> Dict[str, pd.DataFrame]:
-        """
-        Generate stats for multiple datasets efficiently
-        """
-        all_stats = {}
-        
-        for schema_name, table_name in datasets:
-            dataset_key = f"{schema_name}.{table_name}"
-            logger.info(f"Processing dataset: {dataset_key}")
-            
-            try:
-                stats_df = self.generate_dataset_stats(schema_name, table_name)
-                all_stats[dataset_key] = stats_df
-                logger.info(f"Successfully processed {dataset_key} - {len(stats_df)} columns")
-                
-            except Exception as e:
-                logger.error(f"Error processing {dataset_key}: {e}")
-                continue
-        
-        # Save to Excel if specified
-        if output_file and all_stats:
-            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                for dataset_name, df in all_stats.items():
-                    # Sanitize sheet name for Excel
-                    sheet_name = re.sub(r'[^\w\s-]', '_', dataset_name)[:31]
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-            
-            logger.info(f"Results saved to {output_file}")
-        
-        return all_stats
-
-def main():
-    """Example usage"""
-    # ODBC connection string - update with your Dremio details
-    CONNECTION_STRING = (
-        "DRIVER={Dremio ODBC Driver 64-bit};"
-        "HOST=your-dremio-host;"
-        "PORT=31010;"
-        "UID=your-username;"
-        "PWD=your-password;"
-        "AuthenticationType=Plain;"
-        "ConnectionType=Direct"
-    )
-    
-    # Initialize the stats generator
-    stats_generator = DremioODBCStatsGenerator(CONNECTION_STRING)
-    
-    # Example 1: Single dataset analysis
-    try:
-        logger.info("Starting single dataset analysis")
-        single_stats = stats_generator.generate_dataset_stats("your_schema", "your_table")
-        
-        print("\nDataset Statistics Summary:")
-        print(f"Total columns analyzed: {len(single_stats)}")
-        print(f"Total rows in dataset: {single_stats['Total Rows'].iloc[0] if not single_stats.empty else 0}")
-        
-        # Save results
-        single_stats.to_csv("dataset_statistics.csv", index=False)
-        logger.info("Single dataset results saved to dataset_statistics.csv")
-        
-        # Display sample results
-        print("\nFirst 5 columns statistics:")
-        print(single_stats.head().to_string(index=False))
-        
-    except Exception as e:
-        logger.error(f"Error with single dataset analysis: {e}")
-    
-    # Example 2: Multiple datasets analysis
-    datasets_to_analyze = [
-        ("schema1", "customers"),
-        ("schema1", "orders"), 
-        ("schema2", "products"),
-        ("schema2", "inventory")
-    ]
-    
-    try:
-        logger.info("Starting multiple datasets analysis")
-        multiple_stats = stats_generator.generate_multiple_datasets_stats(
-            datasets_to_analyze,
-            output_file="all_datasets_statistics.xlsx"
-        )
-        
-        # Print summary for each dataset
-        print("\nMultiple Datasets Summary:")
-        for dataset_name, df in multiple_stats.items():
-            total_rows = df['Total Rows'].iloc[0] if not df.empty else 0
-            null_columns = len(df[df['Null %'] > 50])  # Columns with >50% nulls
-            
-            print(f"\nDataset: {dataset_name}")
-            print(f"  - Columns: {len(df)}")
-            print(f"  - Rows: {total_rows:,}")
-            print(f"  - High null columns (>50%): {null_columns}")
-            
-    except Exception as e:
-        logger.error(f"Error with multiple datasets analysis: {e}")
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pyodbc
-import pandas as pd
-
-# Fast file read for username
-uid = open(r"C:\Users\YourUsername\gg\Shan.txt").read().strip()
-
-# Credentials and connection settings
-host = 'your.dremio.server.com'
-port = '31010'
-pwd = 'your_password'
-driver = 'Dremio Connector'
-
-# Efficient ODBC connection string
-conn_str = f"""
-DRIVER={{{driver}}};
-ConnectionType=Direct;
-HOST={host};
-PORT={port};
-AuthenticationType=Plain;
-UID={uid};
-PWD={pwd};
-SSL=1;
-SSLVerifyServer=1;
-UseSystemTrustStore=1;
-TLSMinVersion=TLSv1.2;
-"""
-
-# SQL query — tailor this for performance (partitioning, filters, LIMIT if needed)
-query = "SELECT * FROM your_space.your_table"  # replace with real table path
-
-try:
-    conn = pyodbc.connect(conn_str, autocommit=True)
-
-    # Use chunksize to stream large data
-    chunks = []
-    for chunk in pd.read_sql(query, conn, chunksize=100000):  # tune chunk size as needed
-        chunks.append(chunk)
-
-    # Concatenate all chunks into final DataFrame
-    df = pd.concat(chunks, ignore_index=True)
-
-    print(f"Loaded {len(df):,} rows into DataFrame.")
-    print(df.head())
-
-except Exception as e:
-    print("Error during query:", e)
-
-finally:
-    if 'conn' in locals():
-        conn.close()
-
-
-
-
-
-
-
-
-let
-    Source = MyData,  // Replace with your actual table name
-    ColumnNames = Table.ColumnNames(Source),
-    RowCount = Table.RowCount(Source),
-
-    StatsTable = Table.FromList(
-        ColumnNames,
-        Splitter.SplitByNothing(),
-        {"ColumnName"}
-    ),
-    
-    AddStats = Table.AddColumn(StatsTable, "Stats", each 
-        let
-            col = [ColumnName],
-            values = Table.Column(Source, col),
-            nullCount = List.Count(List.Select(values, each _ = null)),
-            uniqueCount = List.Count(List.Distinct(values)),
-            dupCount = RowCount - uniqueCount,
-            nullPct = if RowCount = 0 then 0 else nullCount / RowCount,
-            uniquePct = if RowCount = 0 then 0 else uniqueCount / RowCount,
-            dupPct = if RowCount = 0 then 0 else dupCount / RowCount
-        in
-            [
-                NullPct = Number.Round(nullPct * 100, 2),
-                UniquePct = Number.Round(uniquePct * 100, 2),
-                DuplicatePct = Number.Round(dupPct * 100, 2)
-            ]
-    ),
-
-    Expanded = Table.ExpandRecordColumn(AddStats, "Stats", {"NullPct", "UniquePct", "DuplicatePct"})
-in
-    Expanded
-
-
-
-
-
-
-
-
-import pyodbc
-import pandas as pd
-from openpyxl import Workbook
-import os
-
-# -------- Configuration --------
-conn_str = (
-    r'DRIVER={Dremio ODBC Driver 64-bit};'
-    r'ConnectionType=Direct;'
-    r'HOST=your_host;'
-    r'PORT=your_port;'
-    r'Schema=your_schema;'
-    r'SSL=1;'
-    r'SSLSecurity=1;'
-    r'TRUSTEDCERTS=system;'
-    r'TLSProtocol=TLSv1.2;'
-    r'AuthenticationType=Plain;'
-    r'UID=your_username;'
-    r'PWD=your_password;'
-)
-
-queries = {
-    'Table1': 'SELECT * FROM your_table1',
-    'Table2': 'SELECT * FROM your_table2',
-    # Add more as needed
-}
-
-output_file = 'Fast_Dremio_Report.xlsx'
-CHUNK_SIZE = 100000  # Adjust as needed
-
-# -------- Analysis Function --------
-def quick_column_stats(df):
-    total_rows = len(df)
-
-    results = []
-    for col in df.columns:
-        col_data = df[col]
-        nulls = col_data.isna().sum()
-        uniques = col_data.nunique(dropna=False)
-        duplicates = total_rows - col_data.drop_duplicates().shape[0]
-
-        results.append({
-            'Column': col,
-            'Null %': round(100 * nulls / total_rows, 2),
-            'Unique %': round(100 * uniques / total_rows, 2),
-            'Duplicate %': round(100 * duplicates / total_rows, 2)
-        })
-    return pd.DataFrame(results)
-
-# -------- Main Logic --------
-with pyodbc.connect(conn_str, autocommit=True) as conn:
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        for label, query in queries.items():
-            print(f"Processing: {label}")
-            chunks = pd.read_sql(query, conn, chunksize=CHUNK_SIZE)
-            df_full = pd.concat(chunks, ignore_index=True)
-            stats_df = quick_column_stats(df_full)
-            stats_df.to_excel(writer, sheet_name=label[:31], index=False)  # Excel sheet name max = 31 chars
-
-print(f"✅ Report saved: {output_file}")
-
-
-
-
-
-
-import pyodbc
-import pandas as pd
-from openpyxl import Workbook
-
-# ---------- Configuration ----------
-# Replace with your actual Dremio connection string
-conn_str = (
-    r'DRIVER={Dremio ODBC Driver 64-bit};'
-    r'ConnectionType=Direct;'
-    r'HOST=your_host;'
-    r'PORT=your_port;'
-    r'Schema=your_schema;'
-    r'SSL=1;'
-    r'SSLSecurity=1;'
-    r'TRUSTEDCERTS=system;'
-    r'TLSProtocol=TLSv1.2;'
-    r'AuthenticationType=Plain;'
-    r'UID=your_username;'
-    r'PWD=your_password;'
-)
-
-queries = {
-    'Query1': 'SELECT * FROM your_table1',
-    'Query2': 'SELECT * FROM your_table2',
-    # Add more queries as needed
-}
-
-output_file = 'Dremio_Report.xlsx'
-
-# ---------- Functions ----------
-def analyze_dataframe(df):
-    analysis = []
-    total_rows = len(df)
-
-    for col in df.columns:
-        null_count = df[col].isnull().sum()
-        unique_count = df[col].nunique(dropna=False)
-        duplicate_count = total_rows - df[col].drop_duplicates().shape[0]
-
-        null_pct = (null_count / total_rows) * 100 if total_rows else 0
-        unique_pct = (unique_count / total_rows) * 100 if total_rows else 0
-        duplicate_pct = (duplicate_count / total_rows) * 100 if total_rows else 0
-
-        analysis.append({
-            'Column': col,
-            'Null %': round(null_pct, 2),
-            'Unique %': round(unique_pct, 2),
-            'Duplicate %': round(duplicate_pct, 2)
-        })
-
-    return pd.DataFrame(analysis)
-
-# ---------- Main Logic ----------
-with pyodbc.connect(conn_str, autocommit=True) as conn:
-    writer = pd.ExcelWriter(output_file, engine='openpyxl')
-
-    for name, query in queries.items():
-        print(f"Running: {name}")
-        df = pd.read_sql(query, conn)
-        analysis_df = analyze_dataframe(df)
-        analysis_df.to_excel(writer, sheet_name=name, index=False)
-
-    writer.save()
-
-print(f"Report saved to {output_file}")
-
-
-
-
-
-
-import pandas as pd
-
-# Step 1: Load Excel file with 'schema' and 'table' columns
-df = pd.read_excel("input.xlsx")
-
-# Step 2: Define your multiline SQL template
-template = """
-SELECT
-    t.*
-FROM
-    schema_name.table_name t
-WHERE
-    t.created_at >= SYSDATE - 30;
-"""
-
-# Step 3: Replace placeholders
-def generate_query(row):
-    return template.replace("schema_name", row['schema']).replace("table_name", row['table'])
-
-df['query'] = df.apply(generate_query, axis=1)
-
-# Step 4: Export all generated queries to Excel
-df[['query']].to_excel("output.xlsx", index=False)
-
-
-
-
-
-
-
-
-
-
-import pandas as pd
-
-# Step 1: Read the Excel file
-df = pd.read_excel("input.xlsx")
-
-# Step 2: Define the template string
-template = "SELECT * FROM schema_name.table_name WHERE ROWNUM < 10;"
-
-# Step 3: Replace placeholders with actual values
-def generate_query(row):
-    return template.replace("schema_name", row['schema']).replace("table_name", row['table'])
-
-df['query'] = df.apply(generate_query, axis=1)
-
-# Step 4: Export to a new Excel file
-df[['query']].to_excel("output.xlsx", index=False)
-
-
-
-
-
-
-
-
-import pyodbc
-
-# Replace these values with your actual Dremio credentials and setup
-host = 'localhost'  # or the IP/domain of your Dremio instance
-port = '31010'      # Dremio ODBC default port
-uid = 'your_username'
-pwd = 'your_password'
-driver = 'Dremio Connector'  # Check actual name in ODBC Data Source Administrator
-
-# ODBC connection string
-conn_str = f"""
-DRIVER={{{driver}}};
-ConnectionType=Direct;
-HOST={host};
-PORT={port};
-AuthenticationType=Plain;
-UID={uid};
-PWD={pwd};
-"""
-
-try:
-    # Connect to Dremio
-    conn = pyodbc.connect(conn_str, autocommit=True)
-    cursor = conn.cursor()
-
-    # Example query
-    query = "SELECT * FROM sys.options LIMIT 5"
-    cursor.execute(query)
-
-    # Fetch and print results
-    rows = cursor.fetchall()
-    for row in rows:
-        print(row)
-
-except Exception as e:
-    print("Error connecting to Dremio:", e)
-
-finally:
-    if 'cursor' in locals():
-        cursor.close()
-    if 'conn' in locals():
-        conn.close()
-
-
-import pyodbc
-print(pyodbc.drivers())
-
-
-
--- Enhanced DESCRIBE function for MySQL - Tested Version
--- Creates comprehensive column statistics including null%, unique%, duplicate%
-
-DROP PROCEDURE IF EXISTS enhanced_describe;
-
-DELIMITER $$
-
-CREATE PROCEDURE enhanced_describe(IN table_name_param VARCHAR(255))
-BEGIN
-    DECLARE done INT DEFAULT FALSE;
-    DECLARE col_name VARCHAR(255);
-    DECLARE col_type VARCHAR(255);
-    DECLARE col_nullable VARCHAR(10);
-    DECLARE col_default TEXT;
-    DECLARE col_position INT;
-    
-    DECLARE col_cursor CURSOR FOR
-        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = table_name_param
-        AND TABLE_SCHEMA = DATABASE()
-        ORDER BY ORDINAL_POSITION;
-        
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
-    
-    -- Create temporary table for results
-    DROP TEMPORARY TABLE IF EXISTS temp_describe_results;
-    CREATE TEMPORARY TABLE temp_describe_results (
-        column_name VARCHAR(255),
-        data_type VARCHAR(255),
-        is_nullable VARCHAR(10),
-        column_default TEXT,
-        total_rows BIGINT,
-        null_count BIGINT,
-        null_percentage DECIMAL(5,2),
-        non_null_count BIGINT,
-        unique_count BIGINT,
-        unique_percentage DECIMAL(5,2),
-        duplicate_count BIGINT,
-        duplicate_percentage DECIMAL(5,2),
-        special_char_count BIGINT,
-        special_char_percentage DECIMAL(5,2),
-        most_frequent_value TEXT,
-        frequency_count BIGINT,
-        ordinal_position INT
-    );
-    
-    OPEN col_cursor;
-    
-    read_loop: LOOP
-        FETCH col_cursor INTO col_name, col_type, col_nullable, col_default, col_position;
-        IF done THEN
-            LEAVE read_loop;
-        END IF;
-        
-        -- Build dynamic SQL for each column with proper escaping
-        SET @sql = CONCAT('
-            INSERT INTO temp_describe_results
-            SELECT 
-                ''', col_name, ''' as column_name,
-                ''', col_type, ''' as data_type,
-                ''', col_nullable, ''' as is_nullable,
-                ''', IFNULL(REPLACE(col_default, '''', ''''''), 'NULL'), ''' as column_default,
-                stats.total_rows,
-                stats.null_count,
-                stats.null_percentage,
-                stats.non_null_count,
-                stats.unique_count,
-                stats.unique_percentage,
-                stats.duplicate_count,
-                stats.duplicate_percentage,
-                stats.special_char_count,
-                stats.special_char_percentage,
-                freq.most_frequent_value,
-                freq.frequency_count,
-                ', col_position, ' as ordinal_position
-            FROM (
-                SELECT 
-                    COUNT(*) as total_rows,
-                    SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) as null_count,
-                    CASE 
-                        WHEN COUNT(*) = 0 THEN 0.00 
-                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
-                    END as null_percentage,
-                    SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) as non_null_count,
-                    COUNT(DISTINCT `', col_name, '`) as unique_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND((COUNT(DISTINCT `', col_name, '`) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as unique_percentage,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0 
-                        ELSE SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`) 
-                    END as duplicate_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND(((SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`)) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as duplicate_percentage,
-                    SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) as special_char_count,
-                    CASE 
-                        WHEN COUNT(*) = 0 THEN 0.00 
-                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
-                    END as special_char_percentage
-                FROM `', table_name_param, '`
-            ) stats
-            CROSS JOIN (
-                SELECT 
-                    COALESCE(freq_val, ''<No Data>'') as most_frequent_value,
-                    COALESCE(freq_cnt, 0) as frequency_count
-                FROM (
-                    SELECT 
-                        CAST(`', col_name, '` AS CHAR(500)) as freq_val,
-                        COUNT(*) as freq_cnt
-                    FROM `', table_name_param, '`
-                    WHERE `', col_name, '` IS NOT NULL
-                    GROUP BY `', col_name, '`
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ) most_freq
-                UNION ALL
-                SELECT ''<No Data>'' as most_frequent_value, 0 as frequency_count
-                WHERE NOT EXISTS (SELECT 1 FROM `', table_name_param, '` WHERE `', col_name, '` IS NOT NULL)
-                LIMIT 1
-            ) freq'
-        );
-        
-        PREPARE stmt FROM @sql;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-        
-    END LOOP;
-    
-    CLOSE col_cursor;
-    
-    -- Return results with clean headers
-    SELECT 
-        column_name as 'Column',
-        data_type as 'Data Type',
-        is_nullable as 'Nullable',
-        column_default as 'Default Value',
-        total_rows as 'Total Rows',
-        null_count as 'Null Count',
-        null_percentage as 'Null %',
-        non_null_count as 'Non-Null Count',
-        unique_count as 'Unique Count',
-        unique_percentage as 'Unique %',
-        duplicate_count as 'Duplicate Count',
-        duplicate_percentage as 'Duplicate %',
-        special_char_count as 'Special Char Count',
-        special_char_percentage as 'Special Char %',
-        most_frequent_value as 'Most Frequent Value',
-        frequency_count as 'Frequency Count'
-    FROM temp_describe_results
-    ORDER BY ordinal_position;
-    
-    DROP TEMPORARY TABLE temp_describe_results;
-END$$
-
-DELIMITER ;
-
--- Usage:
--- CALL enhanced_describe('your_table_name');
-
--- Examples:
--- CALL enhanced_describe('users');
--- CALL enhanced_describe('orders');
--- CALL enhanced_describe('products');
-
--- Test with sample data (optional - uncomment to test)
-
--- Create table
-CREATE TABLE customers (
-    customer_id INT PRIMARY KEY,
-    first_name VARCHAR(50),
-    last_name VARCHAR(50),
-    email VARCHAR(100),
-    phone VARCHAR(20),
-    signup_date DATE,
-    is_active BOOLEAN
-);
-
--- Insert 100 rows
-INSERT INTO customers (customer_id, first_name, last_name, email, phone, signup_date, is_active) VALUES
-(1, 'Emma', NULL, 'emma.johnson@example.com', '555-123-0001', '2023-01-15', TRUE),
-(2, 'Liam', NULL, 'liam.smith@example.com', '555-123-0002', '2023-01-18', TRUE),
-(3, 'Olivia', NULL, 'olivia.brown@example.com', '555-123-0003', '2023-01-20', TRUE),
-(4, 'Noah', NULL, 'noah.davis@example.com', '555-123-0004', '2023-01-22', FALSE),
-(5, 'Ava', NULL, 'ava.miller@example.com', '555-123-0005', '2023-01-25', TRUE),
-(6, 'Elijah', NULL, 'elijah.wilson@example.com', '555-123-0006', '2023-02-01', TRUE),
-(7, 'Sophia', NULL, 'sophia.moore@example.com', '555-123-0007', '2023-02-04', FALSE),
-(8, 'James', NULL, 'james.taylor@example.com', '555-123-0008', '2023-02-07', TRUE),
-(9, 'Isabella', NULL, 'isabella.anderson@example.com', '555-123-0009', '2023-02-10', TRUE),
-(10, 'Benjamin', NULL, 'benjamin.thomas@example.com', '555-123-0010', '2023-02-14', FALSE),
--- ... Repeat this pattern for IDs 11 to 100
-(11, 'Mia', NULL, 'mia.jackson@example.com', '555-123-0011', '2023-02-18', TRUE),
-(12, 'Lucas', NULL, 'lucas.white@example.com', '555-123-0012', '2023-02-20', TRUE),
-(13, 'Charlotte', NULL, 'charlotte.harris@example.com', '555-123-0013', '2023-02-23', FALSE),
-(14, 'Henry', NULL, 'henry.martin@example.com', '555-123-0014', '2023-02-25', TRUE),
-(15, 'Amelia', NULL, 'amelia.thompson@example.com', '555-123-0015', '2023-03-01', FALSE),
--- (Continue in this format...)
-(100, 'Ethan', NULL, 'ethan.brooks@example.com', '555-123-0100', '2023-06-30', TRUE);
-
-
--- Test the procedure
--- Step 1: Create a temporary table with filtered data
-DROP TABLE IF EXISTS filtered_customers;
-CREATE TABLE filtered_customers AS
-SELECT * FROM customers WHERE is_active = TRUE;
-
-
-CALL enhanced_describe('filtered_customers');
-
-
-
-
--- Clean up
-
-
-
-
-
-
-
-
-
-
-##################################################
-
-##################################################
-
-
-
-
-
--- Enhanced DESCRIBE function for MySQL - Tested Version
--- Creates comprehensive column statistics including null%, unique%, duplicate%
-
-DROP PROCEDURE IF EXISTS enhanced_describe;
-
-DELIMITER $$
-
-CREATE PROCEDURE enhanced_describe(IN table_name_param VARCHAR(255))
-BEGIN
-    DECLARE done INT DEFAULT FALSE;
-    DECLARE col_name VARCHAR(255);
-    DECLARE col_type VARCHAR(255);
-    DECLARE col_nullable VARCHAR(10);
-    DECLARE col_default TEXT;
-    DECLARE col_position INT;
-    
-    DECLARE col_cursor CURSOR FOR
-        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = table_name_param
-        AND TABLE_SCHEMA = DATABASE()
-        ORDER BY ORDINAL_POSITION;
-        
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
-    
-    -- Create temporary table for results
-    DROP TEMPORARY TABLE IF EXISTS temp_describe_results;
-    CREATE TEMPORARY TABLE temp_describe_results (
-        column_name VARCHAR(255),
-        data_type VARCHAR(255),
-        is_nullable VARCHAR(10),
-        column_default TEXT,
-        total_rows BIGINT,
-        null_count BIGINT,
-        null_percentage DECIMAL(5,2),
-        non_null_count BIGINT,
-        unique_count BIGINT,
-        unique_percentage DECIMAL(5,2),
-        duplicate_count BIGINT,
-        duplicate_percentage DECIMAL(5,2),
-        special_char_count BIGINT,
-        special_char_percentage DECIMAL(5,2),
-        most_frequent_value TEXT,
-        frequency_count BIGINT,
-        ordinal_position INT
-    );
-    
-    OPEN col_cursor;
-    
-    read_loop: LOOP
-        FETCH col_cursor INTO col_name, col_type, col_nullable, col_default, col_position;
-        IF done THEN
-            LEAVE read_loop;
-        END IF;
-        
-        -- Build dynamic SQL for each column with proper escaping
-        SET @sql = CONCAT('
-            INSERT INTO temp_describe_results
-            SELECT 
-                ''', col_name, ''' as column_name,
-                ''', col_type, ''' as data_type,
-                ''', col_nullable, ''' as is_nullable,
-                ''', IFNULL(REPLACE(col_default, '''', ''''''), 'NULL'), ''' as column_default,
-                stats.total_rows,
-                stats.null_count,
-                stats.null_percentage,
-                stats.non_null_count,
-                stats.unique_count,
-                stats.unique_percentage,
-                stats.duplicate_count,
-                stats.duplicate_percentage,
-                stats.special_char_count,
-                stats.special_char_percentage,
-                freq.most_frequent_value,
-                freq.frequency_count,
-                ', col_position, ' as ordinal_position
-            FROM (
-                SELECT 
-                    COUNT(*) as total_rows,
-                    SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) as null_count,
-                    CASE 
-                        WHEN COUNT(*) = 0 THEN 0.00 
-                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
-                    END as null_percentage,
-                    SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) as non_null_count,
-                    COUNT(DISTINCT `', col_name, '`) as unique_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND((COUNT(DISTINCT `', col_name, '`) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as unique_percentage,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0 
-                        ELSE SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`) 
-                    END as duplicate_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND(((SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`)) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as duplicate_percentage,
-                    SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) as special_char_count,
-                    CASE 
-                        WHEN COUNT(*) = 0 THEN 0.00 
-                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` REGEXP ''[^a-zA-Z0-9 ]'' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
-                    END as special_char_percentage
-                FROM `', table_name_param, '`
-            ) stats
-            CROSS JOIN (
-                SELECT 
-                    COALESCE(freq_val, ''<No Data>'') as most_frequent_value,
-                    COALESCE(freq_cnt, 0) as frequency_count
-                FROM (
-                    SELECT 
-                        CAST(`', col_name, '` AS CHAR(500)) as freq_val,
-                        COUNT(*) as freq_cnt
-                    FROM `', table_name_param, '`
-                    WHERE `', col_name, '` IS NOT NULL
-                    GROUP BY `', col_name, '`
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ) most_freq
-                UNION ALL
-                SELECT ''<No Data>'' as most_frequent_value, 0 as frequency_count
-                WHERE NOT EXISTS (SELECT 1 FROM `', table_name_param, '` WHERE `', col_name, '` IS NOT NULL)
-                LIMIT 1
-            ) freq'
-        );
-        
-        PREPARE stmt FROM @sql;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-        
-    END LOOP;
-    
-    CLOSE col_cursor;
-    
-    -- Return results with clean headers
-    SELECT 
-        column_name as 'Column Name',
-        data_type as 'Data Type',
-        is_nullable as 'Nullable',
-        column_default as 'Default Value',
-        total_rows as 'Total Rows',
-        null_count as 'Null Count',
-        null_percentage as 'Null %',
-        non_null_count as 'Non-Null Count',
-        unique_count as 'Unique Count',
-        unique_percentage as 'Unique %',
-        duplicate_count as 'Duplicate Count',
-        duplicate_percentage as 'Duplicate %',
-        special_char_count as 'Special Char Count',
-        special_char_percentage as 'Special Char %',
-        most_frequent_value as 'Most Frequent Value',
-        frequency_count as 'Frequency Count'
-    FROM temp_describe_results
-    ORDER BY ordinal_position;
-    
-    DROP TEMPORARY TABLE temp_describe_results;
-END$$
-
-DELIMITER ;
-
--- Usage:
--- CALL enhanced_describe('your_table_name');
-
--- Examples:
--- CALL enhanced_describe('users');
--- CALL enhanced_describe('orders');
--- CALL enhanced_describe('products');
-
--- Test with sample data (optional - uncomment to test)
-
--- Create table
-CREATE TABLE customers (
-    customer_id INT PRIMARY KEY,
-    first_name VARCHAR(50),
-    last_name VARCHAR(50),
-    email VARCHAR(100),
-    phone VARCHAR(20),
-    signup_date DATE,
-    is_active BOOLEAN
-);
-
--- Insert 100 rows
-INSERT INTO customers (customer_id, first_name, last_name, email, phone, signup_date, is_active) VALUES
-(1, 'Emma', 'Johnson', 'emma.johnson@example.com', '555-123-0001', '2023-01-15', TRUE),
-(2, 'Liam', 'Smith', 'liam.smith@example.com', '555-123-0002', '2023-01-18', TRUE),
-(3, 'Olivia', 'Brown', 'olivia.brown@example.com', '555-123-0003', '2023-01-20', TRUE),
-(4, 'Noah', 'Davis', 'noah.davis@example.com', '555-123-0004', '2023-01-22', FALSE),
-(5, 'Ava', 'Miller', 'ava.miller@example.com', '555-123-0005', '2023-01-25', TRUE),
-(6, 'Elijah', 'Wilson', 'elijah.wilson@example.com', '555-123-0006', '2023-02-01', TRUE),
-(7, 'Sophia', 'Moore', 'sophia.moore@example.com', '555-123-0007', '2023-02-04', FALSE),
-(8, 'James', 'Taylor', 'james.taylor@example.com', '555-123-0008', '2023-02-07', TRUE),
-(9, 'Isabella', 'Anderson', 'isabella.anderson@example.com', '555-123-0009', '2023-02-10', TRUE),
-(10, 'Benjamin', 'Thomas', 'benjamin.thomas@example.com', '555-123-0010', '2023-02-14', FALSE),
--- ... Repeat this pattern for IDs 11 to 100
-(11, 'Mia', NULL, 'mia.jackson@example.com', '555-123-0011', '2023-02-18', TRUE),
-(12, 'Lucas', 'White', 'lucas.white@example.com', '555-123-0012', '2023-02-20', TRUE),
-(13, 'Charlotte', 'Harris', 'charlotte.harris@example.com', '555-123-0013', '2023-02-23', FALSE),
-(14, 'Henry', 'Martin', 'henry.martin@example.com', '555-123-0014', '2023-02-25', TRUE),
-(15, 'Amelia', 'Thompson', 'amelia.thompson@example.com', '555-123-0015', '2023-03-01', FALSE),
--- (Continue in this format...)
-(100, 'Ethan', 'Brooks', 'ethan.brooks@example.com', '555-123-0100', '2023-06-30', TRUE);
-
-
--- Test the procedure
-CALL enhanced_describe('customers');
-
--- Clean up
-DROP TABLE test_sample;
-
-
-
-
-
-
-
-#######################################################################
-#######################################################################
-
--- Enhanced DESCRIBE function for MySQL - Tested Version
--- Creates comprehensive column statistics including null%, unique%, duplicate%
-
-DROP PROCEDURE IF EXISTS enhanced_describe;
-
-DELIMITER $$
-
-CREATE PROCEDURE enhanced_describe(IN table_name_param VARCHAR(255))
-BEGIN
-    DECLARE done INT DEFAULT FALSE;
-    DECLARE col_name VARCHAR(255);
-    DECLARE col_type VARCHAR(255);
-    DECLARE col_nullable VARCHAR(10);
-    DECLARE col_default TEXT;
-    DECLARE col_position INT;
-    
-    DECLARE col_cursor CURSOR FOR
-        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = table_name_param
-        AND TABLE_SCHEMA = DATABASE()
-        ORDER BY ORDINAL_POSITION;
-        
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
-    
-    -- Create temporary table for results
-    DROP TEMPORARY TABLE IF EXISTS temp_describe_results;
-    CREATE TEMPORARY TABLE temp_describe_results (
-        column_name VARCHAR(255),
-        data_type VARCHAR(255),
-        is_nullable VARCHAR(10),
-        column_default TEXT,
-        total_rows BIGINT,
-        null_count BIGINT,
-        null_percentage DECIMAL(5,2),
-        non_null_count BIGINT,
-        unique_count BIGINT,
-        unique_percentage DECIMAL(5,2),
-        duplicate_count BIGINT,
-        duplicate_percentage DECIMAL(5,2),
-        most_frequent_value TEXT,
-        frequency_count BIGINT,
-        ordinal_position INT
-    );
-    
-    OPEN col_cursor;
-    
-    read_loop: LOOP
-        FETCH col_cursor INTO col_name, col_type, col_nullable, col_default, col_position;
-        IF done THEN
-            LEAVE read_loop;
-        END IF;
-        
-        -- Build dynamic SQL for each column with proper escaping
-        SET @sql = CONCAT('
-            INSERT INTO temp_describe_results
-            SELECT 
-                ''', col_name, ''' as column_name,
-                ''', col_type, ''' as data_type,
-                ''', col_nullable, ''' as is_nullable,
-                ''', IFNULL(REPLACE(col_default, '''', ''''''), 'NULL'), ''' as column_default,
-                stats.total_rows,
-                stats.null_count,
-                stats.null_percentage,
-                stats.non_null_count,
-                stats.unique_count,
-                stats.unique_percentage,
-                stats.duplicate_count,
-                stats.duplicate_percentage,
-                freq.most_frequent_value,
-                freq.frequency_count,
-                ', col_position, ' as ordinal_position
-            FROM (
-                SELECT 
-                    COUNT(*) as total_rows,
-                    SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) as null_count,
-                    CASE 
-                        WHEN COUNT(*) = 0 THEN 0.00 
-                        ELSE ROUND((SUM(CASE WHEN `', col_name, '` IS NULL THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) 
-                    END as null_percentage,
-                    SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) as non_null_count,
-                    COUNT(DISTINCT `', col_name, '`) as unique_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND((COUNT(DISTINCT `', col_name, '`) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as unique_percentage,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0 
-                        ELSE SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`) 
-                    END as duplicate_count,
-                    CASE 
-                        WHEN SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN 0.00 
-                        ELSE ROUND(((SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END) - COUNT(DISTINCT `', col_name, '`)) / SUM(CASE WHEN `', col_name, '` IS NOT NULL THEN 1 ELSE 0 END)) * 100, 2) 
-                    END as duplicate_percentage
-                FROM `', table_name_param, '`
-            ) stats
-            CROSS JOIN (
-                SELECT 
-                    COALESCE(freq_val, ''<No Data>'') as most_frequent_value,
-                    COALESCE(freq_cnt, 0) as frequency_count
-                FROM (
-                    SELECT 
-                        CAST(`', col_name, '` AS CHAR(500)) as freq_val,
-                        COUNT(*) as freq_cnt
-                    FROM `', table_name_param, '`
-                    WHERE `', col_name, '` IS NOT NULL
-                    GROUP BY `', col_name, '`
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ) most_freq
-                UNION ALL
-                SELECT ''<No Data>'' as most_frequent_value, 0 as frequency_count
-                WHERE NOT EXISTS (SELECT 1 FROM `', table_name_param, '` WHERE `', col_name, '` IS NOT NULL)
-                LIMIT 1
-            ) freq'
-        );
-        
-        PREPARE stmt FROM @sql;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-        
-    END LOOP;
-    
-    CLOSE col_cursor;
-    
-    -- Return results with clean headers
-    SELECT 
-        column_name as 'Column Name',
-        data_type as 'Data Type',
-        is_nullable as 'Nullable',
-        column_default as 'Default Value',
-        total_rows as 'Total Rows',
-        null_count as 'Null Count',
-        null_percentage as 'Null %',
-        non_null_count as 'Non-Null Count',
-        unique_count as 'Unique Count',
-        unique_percentage as 'Unique %',
-        duplicate_count as 'Duplicate Count',
-        duplicate_percentage as 'Duplicate %',
-        most_frequent_value as 'Most Frequent Value',
-        frequency_count as 'Frequency Count'
-    FROM temp_describe_results
-    ORDER BY ordinal_position;
-    
-    DROP TEMPORARY TABLE temp_describe_results;
-END$$
-
-DELIMITER ;
-
--- Usage:
--- CALL enhanced_describe('your_table_name');
-
--- Examples:
--- CALL enhanced_describe('users');
--- CALL enhanced_describe('orders');
--- CALL enhanced_describe('products');
-
--- Test with sample data (optional - uncomment to test)
-/*
--- Create test table
-CREATE TABLE test_sample (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(50),
-    email VARCHAR(100),
-    age INT,
-    status ENUM('active', 'inactive') DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Insert sample data
-INSERT INTO test_sample (name, email, age, status) VALUES
-('John Doe', 'john@email.com', 25, 'active'),
-('Jane Smith', 'jane@email.com', 30, 'active'),
-('Bob Johnson', NULL, 25, 'inactive'),
-('Alice Brown', 'alice@email.com', NULL, 'active'),
-('Charlie Wilson', 'charlie@email.com', 25, 'active'),
-('David Lee', 'david@email.com', 25, 'active'),
-(NULL, 'unknown@email.com', 40, 'inactive');
-
--- Test the procedure
-CALL enhanced_describe('test_sample');
-
--- Clean up
-DROP TABLE test_sample;
-*/
-
--- Create and test with sample data
-CREATE TABLE test_sample (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(50),
-    email VARCHAR(100),
-    age INT
-);
-
-INSERT INTO test_sample (name, email, age) VALUES
-('John', 'john@email.com', 25),
-('Jane', NULL, 30),
-('Bob', 'bob@email.com', 25);
-
-CALL enhanced_describe('test_sample')
-
+        print(f"\n\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
