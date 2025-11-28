@@ -6,6 +6,313 @@ from collections import Counter
 from tqdm import tqdm
 
 def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
+    else:
+        return "100%"
+
+def count_special_chars(series):
+    non_null = series.filter(series.is_not_null())
+    
+    if non_null.len() == 0:
+        return 0
+    
+    str_series = non_null.cast(pl.Utf8)
+    
+    def has_special_char(val):
+        check_str = val[1:] if val.startswith('-') else val
+        return any(not c.isalnum() for c in check_str)
+    
+    count = str_series.map_elements(has_special_char, return_dtype=pl.Boolean).sum()
+    return count
+
+def get_top_5_duplicates(series):
+    value_counts = series.filter(series.is_not_null()).value_counts().sort("count", descending=True)
+    duplicates = value_counts.filter(pl.col("count") > 1)
+    
+    if duplicates.height == 0:
+        return "No duplicates"
+    
+    top_5 = duplicates.head(5)
+    result_parts = []
+    for row in top_5.iter_rows():
+        val, count = row
+        result_parts.append(f"{val}({count})")
+    
+    if duplicates.height > 5:
+        additional = duplicates.height - 5
+        result_parts.append(f"...{additional}+ more")
+    
+    return " | ".join(result_parts)
+
+def get_length_stats(series):
+    non_null = series.filter(series.is_not_null())
+    
+    if non_null.len() == 0:
+        return None, None, None, None
+    
+    str_series = non_null.cast(pl.Utf8)
+    lengths = str_series.str.len_chars()
+    
+    len_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_counts[0, 0] if len_counts.height > 0 else None
+    
+    median_len = lengths.median()
+    min_len = lengths.min()
+    max_len = lengths.max()
+    
+    return most_common_len, median_len, min_len, max_len
+
+def profile_column(df, column_name, total_rows, prod_data_src, schema, table):
+    series = df[column_name]
+    
+    non_null_series = series.filter(series.is_not_null())
+    non_null_count = non_null_series.len()
+    
+    null_count = series.null_count()
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0
+    null_bucket = get_null_bucket(null_pct)
+    
+    value_counts = None
+    if non_null_count > 0:
+        value_counts = non_null_series.value_counts().sort("count", descending=True)
+    
+    if value_counts is not None and value_counts.height > 0:
+        distinct_count = value_counts.height
+        truly_unique_count = value_counts.filter(pl.col("count") == 1).height
+        unique_pct = (truly_unique_count / non_null_count * 100)
+        
+        duplicate_values = value_counts.filter(pl.col("count") > 1)
+        duplicate_count = duplicate_values.select(pl.col("count").sum()).item() if duplicate_values.height > 0 else 0
+        duplicate_pct = (duplicate_count / non_null_count * 100)
+        
+        most_frequent_value = value_counts[0, 0]
+        
+        if duplicate_values.height == 0:
+            top_5_dups = "No duplicates"
+        else:
+            top_5 = duplicate_values.head(5)
+            result_parts = []
+            for row in top_5.iter_rows():
+                val, count = row
+                result_parts.append(f"{val}({count})")
+            if duplicate_values.height > 5:
+                additional = duplicate_values.height - 5
+                result_parts.append(f"...{additional}+ more")
+            top_5_dups = " | ".join(result_parts)
+    else:
+        distinct_count = 0
+        truly_unique_count = 0
+        unique_pct = 0
+        duplicate_count = 0
+        duplicate_pct = 0
+        most_frequent_value = None
+        top_5_dups = "No duplicates"
+    
+    try:
+        min_value = non_null_series.min() if non_null_count > 0 else None
+        max_value = non_null_series.max() if non_null_count > 0 else None
+    except:
+        min_value = None
+        max_value = None
+    
+    str_series = non_null_series.cast(pl.Utf8) if non_null_count > 0 else None
+    
+    if str_series is not None:
+        def has_special_char(val):
+            check_str = val[1:] if val.startswith('-') else val
+            return any(not c.isalnum() for c in check_str)
+        special_char_count = str_series.map_elements(has_special_char, return_dtype=pl.Boolean).sum()
+    else:
+        special_char_count = 0
+    
+    if str_series is not None and str_series.len() > 0:
+        lengths = str_series.str.len_chars()
+        len_counts = lengths.value_counts().sort("count", descending=True)
+        most_common_len = len_counts[0, 0] if len_counts.height > 0 else None
+        median_len = lengths.median()
+        min_len = lengths.min()
+        max_len = lengths.max()
+    else:
+        most_common_len = None
+        median_len = None
+        min_len = None
+        max_len = None
+    
+    top_10_values = None
+    if '_id' in column_name.lower() and value_counts is not None and value_counts.height > 0:
+        top_10 = value_counts.head(10)
+        top_10_parts = []
+        for row in top_10.iter_rows():
+            val, count = row
+            top_10_parts.append(f"{val}({count})")
+        top_10_values = " | ".join(top_10_parts)
+    
+    return {
+        'prod_data_src': prod_data_src,
+        'schema': schema,
+        'table': table,
+        'column': column_name,
+        'total_rows': total_rows,
+        'null_count': null_count,
+        'null_pct': round(null_pct, 2),
+        'null_bucket': null_bucket,
+        'distinct_count': distinct_count,
+        'unique_count': truly_unique_count,
+        'unique_pct': round(unique_pct, 2),
+        'duplicate_count': duplicate_count,
+        'duplicate_pct': round(duplicate_pct, 2),
+        'special_char_count': special_char_count,
+        'most_frequent_value': str(most_frequent_value) if most_frequent_value is not None else None,
+        'top_5_dups': top_5_dups,
+        'min_value': str(min_value) if min_value is not None else None,
+        'max_value': str(max_value) if max_value is not None else None,
+        'most_common_len': most_common_len,
+        'median_len': median_len,
+        'min_len': min_len,
+        'max_len': max_len,
+        'top_10_values': top_10_values
+    }
+
+def parse_filename(filename):
+    name = Path(filename).stem
+    parts = name.split('.')
+    
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return 'unknown', parts[0]
+
+def profile_parquet_files(folder_path, output_file='data_profile_results.parquet', breakdown_column=None):
+    all_profiles = []
+    
+    parquet_files = list(Path(folder_path).glob('*.parquet'))
+    
+    if not parquet_files:
+        print(f"No .parquet files found in {folder_path}")
+        return
+    
+    print(f"Found {len(parquet_files)} parquet files to process")
+    if breakdown_column:
+        print(f"Breaking down analysis by column: '{breakdown_column}'")
+    else:
+        print("Analyzing entire dataset (no breakdown)")
+    
+    for file_path in tqdm(parquet_files, desc="Processing files", unit="file"):
+        print(f"\nProcessing: {file_path.name}")
+        
+        try:
+            df = pl.read_parquet(file_path)
+            
+            schema, table = parse_filename(file_path.name)
+            
+            if breakdown_column and breakdown_column not in df.columns:
+                print(f"  Warning: breakdown column '{breakdown_column}' not found in {file_path.name}")
+                print(f"  Processing entire file as single group")
+                breakdown_column = None
+            
+            if breakdown_column is None:
+                total_rows = df.height
+                columns_to_profile = df.columns
+                
+                for column in tqdm(columns_to_profile, desc=f"  Profiling columns", unit="col", leave=False):
+                    profile = profile_column(
+                        df, 
+                        column, 
+                        total_rows, 
+                        'N/A',
+                        schema,
+                        table
+                    )
+                    all_profiles.append(profile)
+                
+                print(f"  Profiled {len(columns_to_profile)} columns ({total_rows:,} rows)")
+            else:
+                breakdown_values = df[breakdown_column].unique().to_list()
+                print(f"  Found {len(breakdown_values)} unique '{breakdown_column}' values")
+                
+                columns_to_profile = [col for col in df.columns if col != breakdown_column]
+                
+                for breakdown_value in tqdm(breakdown_values, desc=f"  Processing breakdown values", unit="value", leave=False):
+                    subset = df.filter(pl.col(breakdown_column) == breakdown_value)
+                    total_rows = subset.height
+                    
+                    for column in columns_to_profile:
+                        profile = profile_column(
+                            subset, 
+                            column, 
+                            total_rows, 
+                            breakdown_value,
+                            schema,
+                            table
+                        )
+                        all_profiles.append(profile)
+                    
+                    print(f"  Profiled {breakdown_column}='{breakdown_value}': {len(columns_to_profile)} columns ({total_rows:,} rows)")
+        
+        except Exception as e:
+            print(f"  Error processing {file_path.name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    results_df = pl.DataFrame(all_profiles)
+    
+    column_order = [
+        'prod_data_src', 'schema', 'table', 'column', 'total_rows',
+        'null_count', 'null_pct', 'null_bucket', 
+        'distinct_count', 'unique_count', 'unique_pct', 
+        'duplicate_count', 'duplicate_pct',
+        'special_char_count', 'most_frequent_value', 'top_5_dups',
+        'min_value', 'max_value',
+        'most_common_len', 'median_len', 'min_len', 'max_len',
+        'top_10_values'
+    ]
+    
+    results_df = results_df.select(column_order)
+    
+    results_df.write_parquet(output_file)
+    print(f"\n{'='*60}")
+    print(f"Profiling complete!")
+    print(f"Results saved to: {output_file}")
+    print(f"Total profiles generated: {len(all_profiles):,}")
+    print(f"{'='*60}")
+    
+    return results_df
+
+if __name__ == "__main__":
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+    breakdown_column = 'prod_data_src'
+    
+    results = profile_parquet_files(
+        folder_path, 
+        output_file='data_profile_results.parquet',
+        breakdown_column=breakdown_column
+    )
+
+
+
+####################################
+
+
+import polars as pl
+import os
+import re
+from pathlib import Path
+from collections import Counter
+from tqdm import tqdm
+
+def get_null_bucket(null_pct):
 “”“Categorize null percentage into buckets”””
 if null_pct == 0:
 return “0”
