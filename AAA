@@ -1,3 +1,400 @@
+import polars as pl
+from pathlib import Path
+import gc
+
+
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
+    else:
+        return "100%"
+
+
+def profile_column(df, column_name, total_rows, prod_data_src, schema, table):
+    # Normalize prod_data_src so the column is always string
+    prod_data_src = "N/A" if prod_data_src is None else str(prod_data_src)
+
+    series = df[column_name]
+
+    null_count = series.null_count()
+    non_null_count = total_rows - null_count
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0
+
+    if non_null_count == 0:
+        return {
+            "prod_data_src": prod_data_src,
+            "schema": schema,
+            "table": table,
+            "column": column_name,
+            "total_rows": total_rows,
+            "null_count": null_count,
+            "null_pct": round(null_pct, 2),
+            "null_bucket": get_null_bucket(null_pct),
+            "distinct_count": 0,
+            "unique_count": 0,
+            "unique_pct": 0.0,
+            "duplicate_count": 0,
+            "duplicate_pct": 0.0,
+            "special_char_count": 0,
+            "most_frequent_value": None,
+            "top_5_dups": "No duplicates",
+            "min_value": None,
+            "max_value": None,
+            "most_common_len": None,
+            "median_len": None,
+            "min_len": None,
+            "max_len": None,
+        }
+
+    distinct_count = series.n_unique()
+
+    is_numeric = series.dtype in [
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+        pl.Float32,
+        pl.Float64,
+    ]
+
+    if is_numeric:
+        try:
+            min_value = series.min()
+            max_value = series.max()
+        except Exception:
+            min_value = None
+            max_value = None
+    else:
+        min_value = None
+        max_value = None
+
+    non_null_series = series.filter(series.is_not_null())
+    str_series = non_null_series.cast(pl.Utf8)
+
+    temp_df = pl.DataFrame(
+        {
+            "value": non_null_series,
+            "str_value": str_series,
+            "len": str_series.str.len_chars(),
+        }
+    )
+
+    grouped = temp_df.group_by("value").agg(
+        [
+            pl.len().alias("count"),
+            pl.col("str_value").first().alias("str_val"),
+        ]
+    )
+
+    truly_unique_count = grouped.filter(pl.col("count") == 1).height
+    unique_pct = (truly_unique_count / non_null_count * 100) if non_null_count > 0 else 0.0
+
+    duplicate_rows = grouped.filter(pl.col("count") > 1)
+    if duplicate_rows.height > 0:
+        duplicate_count = duplicate_rows.select(pl.col("count").sum()).item()
+        duplicate_pct = (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0.0
+
+        duplicate_sorted = duplicate_rows.sort("count", descending=True)
+        top_5 = duplicate_sorted.head(5)
+        result_parts = [
+            f"{row[0]}({row[1]})"
+            for row in top_5.select(["value", "count"]).iter_rows()
+        ]
+        if duplicate_rows.height > 5:
+            result_parts.append(f"...{duplicate_rows.height - 5}+ more")
+        top_5_dups = " | ".join(result_parts)
+    else:
+        duplicate_count = 0
+        duplicate_pct = 0.0
+        top_5_dups = "No duplicates"
+
+    most_frequent_row = grouped.sort("count", descending=True).head(1)
+    most_frequent_value = (
+        most_frequent_row[0, 0] if most_frequent_row.height > 0 else None
+    )
+
+    special_char_count = (
+        str_series.map_elements(
+            lambda val: any(
+                not c.isalnum() for c in (val[1:] if val.startswith("-") else val)
+            ),
+            return_dtype=pl.Boolean,
+        ).sum()
+    )
+
+    lengths = temp_df["len"]
+    len_value_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_value_counts[0, 0] if len_value_counts.height > 0 else None
+    median_raw = lengths.median()
+    median_len = int(median_raw) if median_raw is not None else None
+    min_len = lengths.min()
+    max_len = lengths.max()
+
+    return {
+        "prod_data_src": prod_data_src,
+        "schema": schema,
+        "table": table,
+        "column": column_name,
+        "total_rows": total_rows,
+        "null_count": null_count,
+        "null_pct": round(null_pct, 2),
+        "null_bucket": get_null_bucket(null_pct),
+        "distinct_count": distinct_count,
+        "unique_count": truly_unique_count,
+        "unique_pct": round(unique_pct, 2),
+        "duplicate_count": duplicate_count,
+        "duplicate_pct": round(duplicate_pct, 2),
+        "special_char_count": special_char_count,
+        "most_frequent_value": str(most_frequent_value)
+        if most_frequent_value is not None
+        else None,
+        "top_5_dups": top_5_dups,
+        "min_value": str(min_value) if min_value is not None else None,
+        "max_value": str(max_value) if max_value is not None else None,
+        "most_common_len": most_common_len,
+        "median_len": median_len,
+        "min_len": min_len,
+        "max_len": max_len,
+    }
+
+
+def parse_filename(filename):
+    name = Path(filename).stem
+    parts = name.split(".")
+
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return "unknown", parts[0]
+
+
+def profile_parquet_files(
+    folder_path,
+    output_file="data_profile_results.parquet",
+    breakdown_column=None,
+    return_results_df=False,
+):
+    parquet_files = list(Path(folder_path).glob("*.parquet"))
+
+    if not parquet_files:
+        print("No parquet files found in folder")
+        return None
+
+    temp_dir = Path(folder_path) / "_temp_profiles"
+    temp_dir.mkdir(exist_ok=True)
+    print(f"Created temp directory: {temp_dir}")
+
+    for file_path in parquet_files:
+        try:
+            print(f"\nReading {file_path.name}...")
+            df = pl.read_parquet(file_path)
+            schema, table = parse_filename(file_path.name)
+
+            if breakdown_column is not None and breakdown_column not in df.columns:
+                print(
+                    f"Skipping {file_path.name}: breakdown column '{breakdown_column}' not found"
+                )
+                del df
+                gc.collect()
+                continue
+
+            safe_file = file_path.name.replace(".", "_")
+
+            if breakdown_column is None:
+                profiles = []
+                total_rows = df.height
+                for column in df.columns:
+                    try:
+                        profile = profile_column(
+                            df, column, total_rows, "N/A", schema, table
+                        )
+                        profiles.append(profile)
+                    except Exception as e:
+                        print(f"Error profiling column {column}: {e}")
+
+                if profiles:
+                    temp_file = temp_dir / f"{safe_file}__NA.parquet"
+                    pl.DataFrame(profiles).write_parquet(temp_file)
+                    print(f"Wrote {len(profiles)} profiles to {temp_file.name}")
+
+                # free per file
+                del profiles
+                gc.collect()
+
+            else:
+                breakdown_values = df[breakdown_column].unique().to_list()
+                columns_to_profile = [
+                    col for col in df.columns if col != breakdown_column
+                ]
+                print(
+                    f"Found {len(breakdown_values)} breakdown values, "
+                    f"{len(columns_to_profile)} columns to profile"
+                )
+
+                for i, breakdown_value in enumerate(breakdown_values, 1):
+                    profiles = []
+                    subset = df.filter(pl.col(breakdown_column) == breakdown_value)
+                    total_rows = subset.height
+
+                    for column in columns_to_profile:
+                        try:
+                            profile = profile_column(
+                                subset,
+                                column,
+                                total_rows,
+                                breakdown_value,
+                                schema,
+                                table,
+                            )
+                            profiles.append(profile)
+                        except Exception as e:
+                            print(
+                                f"Error profiling column {column} for {breakdown_value}: {e}"
+                            )
+
+                    if profiles:
+                        safe_breakdown = (
+                            str(breakdown_value)
+                            .replace("/", "_")
+                            .replace("\\", "_")
+                            .replace(":", "_")
+                        )
+                        temp_file = temp_dir / f"{safe_file}__{safe_breakdown}.parquet"
+                        pl.DataFrame(profiles).write_parquet(temp_file)
+                        print(
+                            f"[{i}/{len(breakdown_values)}] "
+                            f"Wrote {len(profiles)} profiles to {temp_file.name}"
+                        )
+
+                    # clear memory after each prod_data_src group
+                    del profiles
+                    del subset
+                    gc.collect()
+
+            del df
+            gc.collect()
+            print(f"Freed memory for {file_path.name}")
+
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+
+    # Final merge of all temp profile files
+    temp_files = list(temp_dir.glob("*.parquet"))
+
+    if not temp_files:
+        print("No profiles generated")
+        # cleanup temp dir even if empty
+        try:
+            temp_dir.rmdir()
+        except Exception:
+            pass
+        return None
+
+    print("\n============================================================")
+    print(f"Merging {len(temp_files)} temp files into {output_file} (streaming)...")
+
+    column_order = [
+        "prod_data_src",
+        "schema",
+        "table",
+        "column",
+        "total_rows",
+        "null_count",
+        "null_pct",
+        "null_bucket",
+        "distinct_count",
+        "unique_count",
+        "unique_pct",
+        "duplicate_count",
+        "duplicate_pct",
+        "special_char_count",
+        "most_frequent_value",
+        "top_5_dups",
+        "min_value",
+        "max_value",
+        "most_common_len",
+        "median_len",
+        "min_len",
+        "max_len",
+    ]
+
+    # Build a lazy scan over all temp parquet files and stream to final parquet
+    temp_pattern = str(temp_dir / "*.parquet")
+    lf = pl.scan_parquet(temp_pattern).select(column_order)
+    lf.sink_parquet(output_file)
+
+    # Get total row count from the same temp pattern with an aggregate only
+    row_count = (
+        pl.scan_parquet(temp_pattern)
+        .select(pl.count().alias("count"))
+        .collect()
+        .item()
+    )
+
+    print("Cleaning up temp files...")
+    for temp_file in temp_files:
+        try:
+            temp_file.unlink()
+        except Exception as e:
+            print(f"Could not delete temp file {temp_file}: {e}")
+
+    try:
+        temp_dir.rmdir()
+    except Exception as e:
+        print(f"Could not remove temp directory {temp_dir}: {e}")
+
+    gc.collect()
+
+    print("============================================================")
+    print(f"Profiling complete. Results saved to: {output_file}")
+    print(f"Total profiles: {row_count:,}")
+
+    # By default do not load the huge result back into memory
+    if return_results_df:
+        print("Loading results DataFrame into memory (may be large)...")
+        results_df = pl.read_parquet(output_file)
+        return results_df
+
+    return None
+
+
+if __name__ == "__main__":
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+    breakdown_column = "prod_data_src"
+
+    # Keep return_results_df=False to avoid loading everything into RAM
+    results = profile_parquet_files(
+        folder_path,
+        output_file="data_profile_results.parquet",
+        breakdown_column=breakdown_column,
+        return_results_df=False,
+    )
+
+
+
+
+
+
+
+
+
+
+#################
+
 The error suggests there's an issue with the filtering operation. Here's the corrected version that handles potential indexing errors:
 
 ```python
