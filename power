@@ -1,28 +1,210 @@
-if [ColumnA] = null then 
-    if Text.Contains([ColumnB], "TBD") then 
-        "02-02-2222" 
-    else 
-        [ColumnB] 
-else 
-    [ColumnA]
+import polars as pl
+from pathlib import Path
 
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
+    else:
+        return "100%"
 
+def profile_column(df, column_name, total_rows, prod_data_src, schema, table):
+    series = df[column_name]
+    
+    null_count = series.null_count()
+    non_null_count = total_rows - null_count
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0
+    
+    if non_null_count == 0:
+        return {
+            'prod_data_src': prod_data_src,
+            'schema': schema,
+            'table': table,
+            'column': column_name,
+            'total_rows': total_rows,
+            'null_count': null_count,
+            'null_pct': round(null_pct, 2),
+            'null_bucket': get_null_bucket(null_pct),
+            'distinct_count': 0,
+            'unique_count': 0,
+            'unique_pct': 0.0,
+            'duplicate_count': 0,
+            'duplicate_pct': 0.0,
+            'special_char_count': 0,
+            'most_frequent_value': None,
+            'top_5_dups': "No duplicates",
+            'min_value': None,
+            'max_value': None,
+            'most_common_len': None,
+            'median_len': None,
+            'min_len': None,
+            'max_len': None
+        }
+    
+    distinct_count = series.n_unique()
+    
+    is_numeric = series.dtype in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64]
+    
+    if is_numeric:
+        try:
+            min_value = series.min()
+            max_value = series.max()
+        except:
+            min_value = None
+            max_value = None
+    else:
+        min_value = None
+        max_value = None
+    
+    non_null_series = series.filter(series.is_not_null())
+    
+    temp_df = pl.DataFrame({column_name: non_null_series})
+    grouped = temp_df.group_by(column_name).agg(pl.len().alias("count"))
+    
+    truly_unique_count = grouped.filter(pl.col("count") == 1).height
+    unique_pct = (truly_unique_count / non_null_count * 100)
+    
+    duplicate_rows = grouped.filter(pl.col("count") > 1)
+    if duplicate_rows.height > 0:
+        duplicate_count = duplicate_rows.select(pl.col("count").sum()).item()
+        duplicate_pct = (duplicate_count / non_null_count * 100)
+        
+        duplicate_sorted = duplicate_rows.sort("count", descending=True)
+        top_5 = duplicate_sorted.head(5)
+        result_parts = [f"{row[0]}({row[1]})" for row in top_5.iter_rows()]
+        if duplicate_rows.height > 5:
+            result_parts.append(f"...{duplicate_rows.height - 5}+ more")
+        top_5_dups = " | ".join(result_parts)
+    else:
+        duplicate_count = 0
+        duplicate_pct = 0.0
+        top_5_dups = "No duplicates"
+    
+    most_frequent_row = grouped.sort("count", descending=True).head(1)
+    most_frequent_value = most_frequent_row[0, 0] if most_frequent_row.height > 0 else None
+    
+    str_series = non_null_series.cast(pl.Utf8)
+    
+    special_char_count = str_series.map_elements(
+        lambda val: any(not c.isalnum() for c in (val[1:] if val.startswith('-') else val)),
+        return_dtype=pl.Boolean
+    ).sum()
+    
+    lengths = str_series.str.len_chars()
+    len_value_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_value_counts[0, 0] if len_value_counts.height > 0 else None
+    median_len = int(lengths.median()) if lengths.median() is not None else None
+    min_len = lengths.min()
+    max_len = lengths.max()
+    
+    return {
+        'prod_data_src': prod_data_src,
+        'schema': schema,
+        'table': table,
+        'column': column_name,
+        'total_rows': total_rows,
+        'null_count': null_count,
+        'null_pct': round(null_pct, 2),
+        'null_bucket': get_null_bucket(null_pct),
+        'distinct_count': distinct_count,
+        'unique_count': truly_unique_count,
+        'unique_pct': round(unique_pct, 2),
+        'duplicate_count': duplicate_count,
+        'duplicate_pct': round(duplicate_pct, 2),
+        'special_char_count': special_char_count,
+        'most_frequent_value': str(most_frequent_value) if most_frequent_value is not None else None,
+        'top_5_dups': top_5_dups,
+        'min_value': str(min_value) if min_value is not None else None,
+        'max_value': str(max_value) if max_value is not None else None,
+        'most_common_len': most_common_len,
+        'median_len': median_len,
+        'min_len': min_len,
+        'max_len': max_len
+    }
 
+def parse_filename(filename):
+    name = Path(filename).stem
+    parts = name.split('.')
+    
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return 'unknown', parts[0]
 
-PastDueCount = COUNTROWS(FILTER(YourTableName, YourTableName[DueDate] < TODAY()))
+def profile_parquet_files(folder_path, output_file='data_profile_results.parquet', breakdown_column=None):
+    all_profiles = []
+    parquet_files = list(Path(folder_path).glob('*.parquet'))
+    
+    if not parquet_files:
+        return
+    
+    for file_path in parquet_files:
+        try:
+            df = pl.read_parquet(file_path)
+            schema, table = parse_filename(file_path.name)
+            
+            if breakdown_column is not None and breakdown_column not in df.columns:
+                print(f"Skipping {file_path.name}: breakdown column '{breakdown_column}' not found")
+                continue
+            
+            if breakdown_column is None:
+                total_rows = df.height
+                for column in df.columns:
+                    try:
+                        profile = profile_column(df, column, total_rows, 'N/A', schema, table)
+                        all_profiles.append(profile)
+                    except Exception as e:
+                        print(f"Error profiling column {column}: {e}")
+            else:
+                breakdown_values = df[breakdown_column].unique().to_list()
+                columns_to_profile = [col for col in df.columns if col != breakdown_column]
+                
+                for breakdown_value in breakdown_values:
+                    subset = df.filter(pl.col(breakdown_column) == breakdown_value)
+                    total_rows = subset.height
+                    
+                    for column in columns_to_profile:
+                        try:
+                            profile = profile_column(subset, column, total_rows, breakdown_value, schema, table)
+                            all_profiles.append(profile)
+                        except Exception as e:
+                            print(f"Error profiling column {column} for {breakdown_value}: {e}")
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+    
+    if all_profiles:
+        results_df = pl.DataFrame(all_profiles)
+        
+        column_order = [
+            'prod_data_src', 'schema', 'table', 'column', 'total_rows',
+            'null_count', 'null_pct', 'null_bucket', 
+            'distinct_count', 'unique_count', 'unique_pct', 
+            'duplicate_count', 'duplicate_pct',
+            'special_char_count', 'most_frequent_value', 'top_5_dups',
+            'min_value', 'max_value',
+            'most_common_len', 'median_len', 'min_len', 'max_len'
+        ]
+        
+        results_df = results_df.select(column_order)
+        results_df.write_parquet(output_file)
+        
+        return results_df
 
-if [ColumnA] = null and [ColumnB] = null then 
-    "02-02-2222" 
-else if [ColumnA] = null then 
-    if Text.Contains([ColumnB], "TBD") then 
-        "02-02-2222" 
-    else 
-        [ColumnB] 
-else 
-    [ColumnA]
-
-
-
-if [DueDate] = null then "TBD"
-else if [DueDate] < DateTime.LocalNow() then "Past Due"
-else "Upcoming"
+if __name__ == "__main__":
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+    breakdown_column = 'prod_data_src'
+    
+    results = profile_parquet_files(
+        folder_path, 
+        output_file='data_profile_results.parquet',
+        breakdown_column=breakdown_column
+    )
