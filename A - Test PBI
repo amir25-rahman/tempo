@@ -1,567 +1,331 @@
-"""
-Data Standardization Tool - Memory-Optimized Version
-Analyzes distinct values per column, detects typos, and suggests standardization mappings.
-"""
-
-import csv
-import json
+import polars as pl
+import os
+import re
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog
-from collections import defaultdict, Counter
-import sys
-import gc
-import numpy as np
+from collections import Counter
 
-def standardize_value(value):
-    """
-    Clean and standardize a single value.
-    Preserves sensitive patterns (e.g., 'not found', 'n/a') in their original form.
-    """
-    if value is None or value == '' or (isinstance(value, float) and np.isnan(value)):
-        return ""
-    
-    cleaned = str(value).strip()
-    
-    # Sensitive patterns that should not be standardized
-    lower_check = cleaned.lower()
-    sensitive_patterns = [
-        'not found', 'notfound', 'not_found',
-        'not available', 'not_available', 'n/a', 'na',
-        'null', 'none', 'unknown', 'missing',
-        'error', 'invalid', 'undefined'
-    ]
-    
-    for pattern in sensitive_patterns:
-        if pattern in lower_check:
-            return cleaned
-    
-    # Standard cleaning: lowercase and normalize whitespace
-    cleaned = cleaned.lower()
-    cleaned = ' '.join(cleaned.split())
-    
-    return cleaned
-
-def create_ngram_set(value, n=3):
-    """Generate n-grams from a string for similarity comparison."""
-    if not value or len(value) < n:
-        return set()
-    return {value[i:i+n] for i in range(len(value) - n + 1)}
-
-def jaccard_similarity(ngrams1, ngrams2):
-    """Calculate Jaccard similarity coefficient between two n-gram sets."""
-    if not ngrams1 or not ngrams2:
-        return 0.0
-    
-    intersection = len(ngrams1 & ngrams2)
-    union = len(ngrams1 | ngrams2)
-    
-    return intersection / union if union > 0 else 0.0
-
-def find_similar_groups_smart(unique_values, similarity_threshold=0.85):
-    """
-    Find similar values using windowed comparison.
-    Only checks nearby values (sorted alphabetically) to minimize comparisons.
-    """
-    if len(unique_values) == 0:
-        return {}
-    
-    print(f"      Checking for typos among {len(unique_values)} unique values...")
-    
-    groups = {}
-    sorted_values = sorted(unique_values, key=lambda x: (len(x), x))
-    
-    total_comparisons = 0
-    found_groups = 0
-    check_window = 50  # Only compare with next 50 values
-    
-    for i, val1 in enumerate(sorted_values):
-        if val1 in groups:
-            continue
-        
-        if i > 0 and i % 5000 == 0:
-            print(f"      Progress: {i}/{len(sorted_values)} ({total_comparisons} comparisons, {found_groups} groups)")
-        
-        len1 = len(val1)
-        max_len_diff = 2  # Maximum character difference
-        similar_found = False
-        
-        # Only check a small window of nearby values
-        for j in range(i+1, min(i+1+check_window, len(sorted_values))):
-            val2 = sorted_values[j]
-            
-            if val2 in groups:
-                continue
-            
-            len2 = len(val2)
-            
-            # Stop if we've exceeded length range
-            if len2 > len1 + max_len_diff:
-                break
-            
-            if abs(len1 - len2) > max_len_diff:
-                continue
-            
-            total_comparisons += 1
-            
-            # Calculate similarity
-            if len1 == len2:
-                diffs = sum(1 for c1, c2 in zip(val1, val2) if c1 != c2)
-                similarity = 1 - (diffs / len1)
-            else:
-                ngrams1 = create_ngram_set(val1, n=3)
-                ngrams2 = create_ngram_set(val2, n=3)
-                similarity = jaccard_similarity(ngrams1, ngrams2)
-            
-            if similarity >= similarity_threshold:
-                groups[val2] = val1
-                similar_found = True
-                found_groups += 1
-        
-        if not similar_found:
-            groups[val1] = val1
-    
-    print(f"      Completed: {total_comparisons:,} comparisons, {found_groups} similar pairs found")
-    
-    return groups
-
-def analyze_column_streaming(file_path, column_name, file_type, similarity_threshold=0.85, max_memory_values=50000):
-    """
-    Analyze a single column by:
-    1. Extract distinct values
-    2. Standardize distinct values
-    3. Find similar groups
-    4. Generate mapping report
-    """
-    print(f"\n   Column: {column_name}")
-    
-    # Phase 1: Get distinct values from file
-    print(f"      [1/4] Extracting distinct values...")
-    
-    original_value_counter = Counter()
-    row_count = 0
-    
-    if file_type == 'csv':
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.DictReader(f)
-            
-            if column_name not in reader.fieldnames:
-                print(f"      ERROR: Column '{column_name}' not found")
-                return []
-            
-            for row in reader:
-                value = row.get(column_name, '')
-                if value:
-                    original_value_counter[value] += 1
-                
-                row_count += 1
-                if row_count % 10000 == 0:
-                    print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
-    
-    elif file_type == 'parquet':
-        try:
-            import pyarrow.parquet as pq
-            parquet_file = pq.ParquetFile(file_path)
-            
-            for batch in parquet_file.iter_batches(batch_size=10000):
-                if column_name not in batch.schema.names:
-                    print(f"      ERROR: Column '{column_name}' not found")
-                    return []
-                
-                column_data = batch.column(column_name).to_pylist()
-                
-                for value in column_data:
-                    if value:
-                        original_value_counter[value] += 1
-                    row_count += 1
-                
-                if row_count % 10000 == 0:
-                    print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
-                
-                del column_data
-                gc.collect()
-        except ImportError:
-            print("      ERROR: PyArrow not installed (pip install pyarrow)")
-            return []
-    
-    elif file_type in ['xlsx', 'xls']:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-            ws = wb.active
-            
-            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            if column_name not in headers:
-                print(f"      ERROR: Column '{column_name}' not found")
-                return []
-            
-            col_idx = headers.index(column_name)
-            
-            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
-                if col_idx < len(row):
-                    value = row[col_idx]
-                    if value:
-                        original_value_counter[value] += 1
-                    row_count += 1
-                    
-                    if row_count % 10000 == 0:
-                        print(f"      Scanned {row_count:,} rows ({len(original_value_counter)} distinct)...", end='\r')
-            
-            wb.close()
-        except ImportError:
-            print("      ERROR: openpyxl not installed (pip install openpyxl)")
-            return []
-    
-    print(f"      Scanned {row_count:,} rows, found {len(original_value_counter)} distinct values")
-    
-    if len(original_value_counter) == 0:
-        print("      No data found in column")
-        return []
-    
-    # Phase 2: Standardize only the distinct values
-    print(f"      [2/4] Standardizing {len(original_value_counter)} distinct values...")
-    
-    std_to_count = Counter()
-    std_to_orig = defaultdict(set)
-    
-    for original_value, count in original_value_counter.items():
-        std_value = standardize_value(original_value)
-        if std_value:
-            std_to_count[std_value] += count
-            std_to_orig[std_value].add(str(original_value))
-    
-    reduction = len(original_value_counter) - len(std_to_count)
-    print(f"      After standardization: {len(std_to_count)} unique values (removed {reduction} duplicates)")
-    
-    del original_value_counter
-    gc.collect()
-    
-    if len(std_to_count) > max_memory_values:
-        print(f"      WARNING: {len(std_to_count)} unique values is very large")
-        proceed = input("      Continue? (y/n): ").strip().lower()
-        if proceed != 'y':
-            return []
-    
-    # Phase 3: Find similar groups
-    print(f"      [3/4] Finding similar groups...")
-    unique_vals = list(std_to_count.keys())
-    similar_groups = find_similar_groups_smart(unique_vals, similarity_threshold)
-    
-    # Phase 4: Build report
-    print(f"      [4/4] Building report...")
-    report_data = []
-    
-    # Group by suggested value
-    suggested_to_variants = defaultdict(list)
-    for std_value in std_to_count.keys():
-        suggested_value = similar_groups.get(std_value, std_value)
-        suggested_to_variants[suggested_value].append(std_value)
-    
-    # Generate report rows
-    for std_value, count in std_to_count.items():
-        original_variants = std_to_orig[std_value]
-        suggested_value = similar_groups.get(std_value, std_value)
-        
-        # Analysis metrics
-        num_original_variants = len(original_variants)
-        has_mixed_case = len([v for v in original_variants if v != v.lower()]) > 0
-        has_whitespace_issues = len([v for v in original_variants if v != v.strip() or '  ' in v]) > 0
-        is_sensitive = std_value in original_variants
-        
-        # Determine flag and action
-        if suggested_value != std_value:
-            similar_flag = "YES - REVIEW"
-            action = "MAP TO SUGGESTED"
-        else:
-            variants_in_group = suggested_to_variants[std_value]
-            if len(variants_in_group) > 1:
-                similar_flag = f"GROUP LEADER ({len(variants_in_group)} variants)"
-                action = "KEEP AS STANDARD"
-            else:
-                similar_flag = "UNIQUE"
-                action = "NO CHANGE"
-        
-        if is_sensitive:
-            action = "SENSITIVE - NO CHANGE"
-        
-        report_data.append({
-            'column': column_name,
-            'standardized_value': std_value,
-            'suggested_value': suggested_value,
-            'count': count,
-            'num_original_variants': num_original_variants,
-            'original_values': ' | '.join(sorted(original_variants)),
-            'has_mixed_case': 'YES' if has_mixed_case else 'NO',
-            'has_whitespace_issues': 'YES' if has_whitespace_issues else 'NO',
-            'is_sensitive': 'YES' if is_sensitive else 'NO',
-            'similar_flag': similar_flag,
-            'action': action,
-            'length': len(std_value)
-        })
-    
-    print(f"      Complete: {len(report_data)} entries generated")
-    
-    del std_to_count, std_to_orig, similar_groups
-    gc.collect()
-    
-    return report_data
-
-def select_file(title, filetypes):
-    """Open file dialog to select input file."""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes)
-    root.destroy()
-    return file_path
-
-def select_save_file(title, defaultextension, filetypes):
-    """Open file dialog to save output file."""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    file_path = filedialog.asksaveasfilename(
-        title=title, 
-        defaultextension=defaultextension,
-        filetypes=filetypes
-    )
-    root.destroy()
-    return file_path
-
-def get_column_names(file_path, file_type):
-    """Extract column names without loading entire file."""
-    if file_type == 'csv':
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.DictReader(f)
-            return reader.fieldnames
-    
-    elif file_type == 'parquet':
-        try:
-            import pyarrow.parquet as pq
-            schema = pq.read_schema(file_path)
-            return schema.names
-        except ImportError:
-            return None
-    
-    elif file_type in ['xlsx', 'xls']:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-            ws = wb.active
-            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            wb.close()
-            return headers
-        except ImportError:
-            return None
-    
-    return None
-
-def save_report(report_data, file_path):
-    """Save report to specified format."""
-    ext = Path(file_path).suffix.lower()
-    
-    if ext == '.csv':
-        if not report_data:
-            return
-        
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = report_data[0].keys()
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(report_data)
-    
-    elif ext == '.parquet':
-        try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-            table = pa.Table.from_pylist(report_data)
-            pq.write_table(table, file_path)
-        except ImportError:
-            print("ERROR: PyArrow not installed")
-    
-    elif ext in ['.xlsx', '.xls']:
-        try:
-            import openpyxl
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            
-            if report_data:
-                headers = list(report_data[0].keys())
-                ws.append(headers)
-                
-                for row in report_data:
-                    ws.append([row[h] for h in headers])
-            
-            wb.save(file_path)
-        except ImportError:
-            print("ERROR: openpyxl not installed")
-
-def main():
-    print("=" * 70)
-    print("DATA STANDARDIZATION TOOL")
-    print("=" * 70)
-    
-    # Step 1: Select input file
-    filetypes = [
-        ('CSV files', '*.csv'),
-        ('Parquet files', '*.parquet'),
-        ('Excel files', '*.xlsx *.xls'),
-        ('All files', '*.*')
-    ]
-    
-    print("\n[STEP 1] Select input file")
-    input_file = select_file("Select Input File", filetypes)
-    
-    if not input_file:
-        print("No file selected. Exiting.")
-        return
-    
-    file_path = Path(input_file)
-    file_type = file_path.suffix.lower().replace('.', '')
-    print(f"Selected: {file_path.name} ({file_type.upper()})")
-    
-    # Step 2: Read columns
-    print("\n[STEP 2] Reading file structure")
-    columns = get_column_names(input_file, file_type)
-    
-    if not columns:
-        print("ERROR: Could not read file. Check format or install dependencies.")
-        return
-    
-    print(f"Found {len(columns)} columns: {', '.join(columns)}")
-    
-    # Step 3: Select columns to analyze
-    print("\n[STEP 3] Select columns to analyze")
-    print("Enter column names separated by commas, or 'all' for all columns")
-    
-    col_input = input("Columns: ").strip()
-    
-    if col_input.lower() == 'all':
-        columns_to_analyze = columns
+def get_null_bucket(null_pct):
+    """Categorize null percentage into buckets"""
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
     else:
-        columns_to_analyze = [c.strip() for c in col_input.split(',')]
-        invalid_cols = [c for c in columns_to_analyze if c not in columns]
-        if invalid_cols:
-            print(f"ERROR: Invalid columns: {', '.join(invalid_cols)}")
-            return
+        return "100%"
+
+def count_special_chars(series):
+    """Count rows that contain special characters (excluding alphanumeric and handling negatives)"""
+    # Filter nulls first, then convert to string
+    non_null = series.filter(series.is_not_null())
     
-    print(f"Will analyze {len(columns_to_analyze)} column(s)")
+    if non_null.len() == 0:
+        return 0
     
-    # Step 4: Set similarity threshold
-    print("\n[STEP 4] Set similarity threshold")
-    print("Range: 0.0 to 1.0 (default: 0.85)")
-    print("Higher = stricter matching, Lower = more fuzzy matching")
+    # Convert to string after filtering nulls
+    str_series = non_null.cast(pl.Utf8)
     
-    threshold_input = input("Threshold (press Enter for 0.85): ").strip()
+    # Count rows where special characters exist (not counting leading minus for negatives)
+    def has_special_char(val):
+        # Remove leading minus if it exists
+        check_str = val[1:] if val.startswith('-') else val
+        # Check if any character is not alphanumeric
+        return any(not c.isalnum() for c in check_str)
     
-    try:
-        similarity_threshold = float(threshold_input) if threshold_input else 0.85
-        if not 0 <= similarity_threshold <= 1:
-            raise ValueError
-    except ValueError:
-        print("Invalid input. Using default: 0.85")
-        similarity_threshold = 0.85
+    count = str_series.map_elements(has_special_char, return_dtype=pl.Boolean).sum()
+    return count
+
+def get_top_5_duplicates(series):
+    """Get top 5 duplicate values with counts in value(count) format"""
+    # Get value counts, excluding nulls
+    value_counts = series.filter(series.is_not_null()).value_counts().sort("count", descending=True)
     
-    print(f"Using threshold: {similarity_threshold}")
+    # Only consider values that appear more than once
+    duplicates = value_counts.filter(pl.col("count") > 1)
     
-    # Step 5: Analyze columns
-    print("\n[STEP 5] Analyzing columns")
-    all_reports = []
+    if duplicates.height == 0:
+        return "No duplicates"
     
-    for idx, col in enumerate(columns_to_analyze, 1):
-        print(f"\n--- Analyzing {idx}/{len(columns_to_analyze)} ---")
-        report = analyze_column_streaming(input_file, col, file_type, similarity_threshold)
-        all_reports.extend(report)
-        gc.collect()
+    # Get top 5
+    top_5 = duplicates.head(5)
     
-    if not all_reports:
-        print("\nNo data to report.")
-        return
+    # Format result as value(count)
+    result_parts = []
+    for row in top_5.iter_rows():
+        val, count = row
+        result_parts.append(f"{val}({count})")
     
-    # Sort and summarize
-    print("\n[STEP 6] Generating summary")
+    # Show how many additional duplicate groups exist
+    if duplicates.height > 5:
+        additional = duplicates.height - 5
+        result_parts.append(f"...{additional}+ more")
     
-    action_priority = {
-        'MAP TO SUGGESTED': 1,
-        'GROUP LEADER': 2,
-        'KEEP AS STANDARD': 2,
-        'SENSITIVE - NO CHANGE': 3,
-        'NO CHANGE': 4
+    return " | ".join(result_parts)
+
+def get_length_stats(series):
+    """Calculate length statistics for the actual values in a column"""
+    # Filter nulls first
+    non_null = series.filter(series.is_not_null())
+    
+    if non_null.len() == 0:
+        return None, None, None, None
+    
+    # Convert to string AFTER filtering nulls to get character length
+    str_series = non_null.cast(pl.Utf8)
+    lengths = str_series.str.len_chars()
+    
+    # Most common length
+    len_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_counts[0, 0] if len_counts.height > 0 else None
+    
+    # Stats
+    median_len = lengths.median()
+    min_len = lengths.min()
+    max_len = lengths.max()
+    
+    return most_common_len, median_len, min_len, max_len
+
+def profile_column(df, column_name, total_rows, prod_data_src, schema, table):
+    """Profile a single column with all required metrics"""
+    
+    series = df[column_name]
+    
+    # Null metrics
+    null_count = series.null_count()
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0
+    null_bucket = get_null_bucket(null_pct)
+    
+    # Unique metrics
+    non_null_count = total_rows - null_count
+    distinct_count = series.n_unique()
+    
+    # For unique_pct, we want truly unique values (appear only once)
+    if non_null_count > 0:
+        value_counts = series.filter(series.is_not_null()).value_counts()
+        truly_unique_count = value_counts.filter(pl.col("count") == 1).height
+        unique_pct = (truly_unique_count / non_null_count * 100)
+    else:
+        truly_unique_count = 0
+        unique_pct = 0
+    
+    # Duplicate metrics - percentage of rows that contain duplicate values
+    if non_null_count > 0:
+        value_counts = series.filter(series.is_not_null()).value_counts()
+        # Get values that appear more than once
+        duplicate_values = value_counts.filter(pl.col("count") > 1)
+        # Sum the counts of all duplicate values to get total rows with duplicates
+        duplicate_count = duplicate_values.select(pl.col("count").sum()).item() if duplicate_values.height > 0 else 0
+        duplicate_pct = (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0
+    else:
+        duplicate_count = 0
+        duplicate_pct = 0
+    
+    # Min/Max values
+    min_value = series.min()
+    max_value = series.max()
+    
+    # Special characters
+    special_char_count = count_special_chars(series)
+    
+    # Most frequent value
+    if non_null_count > 0:
+        value_counts = series.value_counts().sort("count", descending=True)
+        most_frequent_value = value_counts[0, 0] if value_counts.height > 0 else None
+    else:
+        most_frequent_value = None
+    
+    # Top 5 duplicates
+    top_5_dups = get_top_5_duplicates(series)
+    
+    # Length statistics
+    most_common_len, median_len, min_len, max_len = get_length_stats(series)
+    
+    # Top 10 value counts for ID columns
+    top_10_values = None
+    if '_id' in column_name.lower():
+        value_counts_top10 = series.value_counts().sort("count", descending=True).head(10)
+        if value_counts_top10.height > 0:
+            # Format as "value(count)"
+            top_10_parts = []
+            for row in value_counts_top10.iter_rows():
+                val, count = row
+                top_10_parts.append(f"{val}({count})")
+            top_10_values = " | ".join(top_10_parts)
+    
+    return {
+        'prod_data_src': prod_data_src,
+        'schema': schema,
+        'table': table,
+        'column': column_name,
+        'total_rows': total_rows,
+        'null_count': null_count,
+        'null_pct': round(null_pct, 2),
+        'null_bucket': null_bucket,
+        'distinct_count': distinct_count,
+        'unique_count': truly_unique_count,
+        'unique_pct': round(unique_pct, 2),
+        'duplicate_count': duplicate_count,
+        'duplicate_pct': round(duplicate_pct, 2),
+        'special_char_count': special_char_count,
+        'most_frequent_value': str(most_frequent_value) if most_frequent_value is not None else None,
+        'top_5_dups': top_5_dups,
+        'min_value': str(min_value) if min_value is not None else None,
+        'max_value': str(max_value) if max_value is not None else None,
+        'most_common_len': most_common_len,
+        'median_len': median_len,
+        'min_len': min_len,
+        'max_len': max_len,
+        'top_10_values': top_10_values
     }
-    
-    all_reports.sort(key=lambda x: (
-        x['column'],
-        action_priority.get(x['action'], 99),
-        -x['count']
-    ))
-    
-    needs_mapping = sum(1 for r in all_reports if r['action'] == 'MAP TO SUGGESTED')
-    group_leaders = sum(1 for r in all_reports if 'GROUP LEADER' in r['action'])
-    sensitive_values = sum(1 for r in all_reports if r['is_sensitive'] == 'YES')
-    
-    print(f"Total distinct values: {len(all_reports)}")
-    print(f"  - Need mapping: {needs_mapping}")
-    print(f"  - Group leaders: {group_leaders}")
-    print(f"  - Sensitive values: {sensitive_values}")
-    
-    # Step 6: Choose output format
-    print("\n[STEP 7] Choose output format")
-    print("1 = CSV")
-    print("2 = Excel")
-    print("3 = Parquet")
-    
-    format_choice = input("Choice (1/2/3): ").strip()
-    
-    if format_choice == '1':
-        default_ext = '.csv'
-        file_types = [('CSV files', '*.csv')]
-    elif format_choice == '2':
-        default_ext = '.xlsx'
-        file_types = [('Excel files', '*.xlsx')]
-    elif format_choice == '3':
-        default_ext = '.parquet'
-        file_types = [('Parquet files', '*.parquet')]
-    else:
-        print("Invalid choice. Using CSV.")
-        default_ext = '.csv'
-        file_types = [('CSV files', '*.csv')]
-    
-    file_types.append(('All files', '*.*'))
-    
-    output_file = select_save_file("Save Report", default_ext, file_types)
-    
-    if not output_file:
-        print("No output file selected. Exiting.")
-        return
-    
-    # Save report
-    print("\n[STEP 8] Saving report")
-    try:
-        save_report(all_reports, output_file)
-        print(f"Report saved: {Path(output_file).name}")
-    except Exception as e:
-        print(f"ERROR saving file: {e}")
-        return
-    
-    print("\n" + "=" * 70)
-    print("COMPLETE")
-    print("=" * 70)
-    print("\nReport columns:")
-    print("  • standardized_value: Cleaned distinct value")
-    print("  • suggested_value: Recommended mapping")
-    print("  • action: MAP TO SUGGESTED / KEEP AS STANDARD / NO CHANGE")
-    print("  • is_sensitive: Values preserved (e.g., 'not found')")
-    print("\nNext steps:")
-    print("  1. Filter rows where action = 'MAP TO SUGGESTED'")
-    print("  2. Review suggested mappings")
-    print("  3. Apply mappings to your dataset")
 
+def parse_filename(filename):
+    """Parse filename in format hive.schema.table.parquet"""
+    name = Path(filename).stem  # Remove .parquet extension
+    parts = name.split('.')
+    
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]  # schema, table
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return 'unknown', parts[0]
+
+def profile_parquet_files(folder_path, output_csv='data_profile_results.csv', breakdown_column=None):
+    """
+    Profile all parquet files in a folder
+    
+    Args:
+        folder_path: Path to folder containing parquet files
+        output_csv: Output CSV filename
+        breakdown_column: Column name to break down analysis by (e.g., 'prod_data_src'). 
+                         If None, analyzes entire dataset. This column will NOT be profiled itself.
+    """
+    
+    all_profiles = []
+    
+    # Get all parquet files
+    parquet_files = list(Path(folder_path).glob('*.parquet'))
+    
+    if not parquet_files:
+        print(f"No .parquet files found in {folder_path}")
+        return
+    
+    print(f"Found {len(parquet_files)} parquet files to process")
+    if breakdown_column:
+        print(f"Breaking down analysis by column: '{breakdown_column}'")
+    else:
+        print("Analyzing entire dataset (no breakdown)")
+    
+    for file_path in parquet_files:
+        print(f"\nProcessing: {file_path.name}")
+        
+        try:
+            # Read parquet file with Polars
+            df = pl.read_parquet(file_path)
+            
+            # Parse schema and table from filename
+            schema, table = parse_filename(file_path.name)
+            
+            # Check if breakdown column exists (if specified)
+            if breakdown_column and breakdown_column not in df.columns:
+                print(f"  Warning: breakdown column '{breakdown_column}' not found in {file_path.name}")
+                print(f"  Processing entire file as single group")
+                breakdown_column = None
+            
+            if breakdown_column is None:
+                # Profile all columns for the entire file
+                total_rows = df.height
+                columns_to_profile = df.columns
+                
+                for column in columns_to_profile:
+                    profile = profile_column(
+                        df, 
+                        column, 
+                        total_rows, 
+                        'N/A',
+                        schema,
+                        table
+                    )
+                    all_profiles.append(profile)
+                
+                print(f"  Profiled {len(columns_to_profile)} columns ({total_rows:,} rows)")
+            else:
+                # Get unique breakdown values
+                breakdown_values = df[breakdown_column].unique().to_list()
+                print(f"  Found {len(breakdown_values)} unique '{breakdown_column}' values")
+                
+                # Get columns to profile (exclude the breakdown column itself)
+                columns_to_profile = [col for col in df.columns if col != breakdown_column]
+                
+                for breakdown_value in breakdown_values:
+                    # Filter for this breakdown value
+                    subset = df.filter(pl.col(breakdown_column) == breakdown_value)
+                    total_rows = subset.height
+                    
+                    # Profile each column in this subset (except breakdown column)
+                    for column in columns_to_profile:
+                        profile = profile_column(
+                            subset, 
+                            column, 
+                            total_rows, 
+                            breakdown_value,
+                            schema,
+                            table
+                        )
+                        all_profiles.append(profile)
+                    
+                    print(f"  Profiled {breakdown_column}='{breakdown_value}': {len(columns_to_profile)} columns ({total_rows:,} rows)")
+        
+        except Exception as e:
+            print(f"  Error processing {file_path.name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # Create results dataframe with Polars
+    results_df = pl.DataFrame(all_profiles)
+    
+    # Reorder columns for better readability
+    column_order = [
+        'prod_data_src', 'schema', 'table', 'column', 'total_rows',
+        'null_count', 'null_pct', 'null_bucket', 
+        'distinct_count', 'unique_count', 'unique_pct', 
+        'duplicate_count', 'duplicate_pct',
+        'special_char_count', 'most_frequent_value', 'top_5_dups',
+        'min_value', 'max_value',
+        'most_common_len', 'median_len', 'min_len', 'max_len',
+        'top_10_values'
+    ]
+    
+    results_df = results_df.select(column_order)
+    
+    # Save to CSV
+    results_df.write_csv(output_csv)
+    print(f"\n{'='*60}")
+    print(f"Profiling complete!")
+    print(f"Results saved to: {output_csv}")
+    print(f"Total profiles generated: {len(all_profiles):,}")
+    print(f"{'='*60}")
+    
+    return results_df
+
+# Example usage
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nCancelled by user")
-    except Exception as e:
-        print(f"\n\nERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    # Specify your folder path here
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+    
+    # Define breakdown column (set to None to analyze entire dataset without breakdown)
+    breakdown_column = 'prod_data_src'  # Change this to your desired column or set to None
+    
+    # Run the profiler
+    results = profile_parquet_files(
+        folder_path, 
+        output_csv='data_profile_results.csv',
+        breakdown_column=breakdown_column
+    )
+    
