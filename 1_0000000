@@ -1,4 +1,522 @@
 import polars as pl
+from pathlib import Path
+import gc
+import shutil
+import sys
+
+
+def trim_memory():
+    """
+    Ask the OS to trim the process working set so you can
+    actually see memory go down in Task Manager / top.
+
+    On Windows: uses EmptyWorkingSet.
+    On Linux: uses malloc_trim(0) if available.
+    On other platforms: no-op.
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            ctypes.windll.psapi.EmptyWorkingSet(
+                ctypes.windll.kernel32.GetCurrentProcess()
+            )
+        elif sys.platform.startswith("linux"):
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+        # macOS and others: nothing easy and safe by default
+    except Exception:
+        # If trimming fails, do not crash the job
+        pass
+
+
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
+    else:
+        return "100%"
+
+
+def profile_series(series, total_rows, prod_data_src, schema, table, column_name):
+    # Normalize prod_data_src so the column is always string
+    prod_data_src = "N/A" if prod_data_src is None else str(prod_data_src)
+
+    null_count = series.null_count()
+    non_null_count = total_rows - null_count
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0.0
+
+    # Early out if everything is null
+    if non_null_count == 0:
+        return {
+            "prod_data_src": prod_data_src,
+            "schema": schema,
+            "table": table,
+            "column": column_name,
+            "total_rows": int(total_rows),
+            "null_count": int(null_count),
+            "null_pct": float(round(null_pct, 2)),
+            "null_bucket": get_null_bucket(null_pct),
+            "distinct_count": 0,
+            "unique_count": 0,
+            "unique_pct": 0.0,
+            "duplicate_count": 0,
+            "duplicate_pct": 0.0,
+            "special_char_count": 0,
+            "most_frequent_value": None,
+            "top_5_dups": "No duplicates",
+            "min_value": None,
+            "max_value": None,
+            "most_common_len": None,
+            "median_len": None,
+            "min_len": None,
+            "max_len": None,
+        }
+
+    # Distinct is on the full series including nulls
+    distinct_count = series.n_unique()
+
+    is_numeric = series.dtype in [
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+        pl.Float32,
+        pl.Float64,
+    ]
+
+    if is_numeric:
+        try:
+            min_value = series.min()
+            max_value = series.max()
+        except Exception:
+            min_value = None
+            max_value = None
+    else:
+        min_value = None
+        max_value = None
+
+    # Work only on non null values for string based stats
+    non_null_series = series.drop_nulls()
+    if non_null_series.len() == 0:
+        non_null_count = 0
+    else:
+        non_null_count = non_null_series.len()
+
+    # String representation for grouping, length, special char
+    str_series = non_null_series.cast(pl.Utf8)
+
+    # Group by value on the string representation
+    grouped = str_series.to_frame("val").group_by("val").agg(
+        pl.len().alias("count")
+    )
+
+    truly_unique_count = grouped.filter(pl.col("count") == 1).height
+    unique_pct = (
+        (truly_unique_count / non_null_count * 100) if non_null_count > 0 else 0.0
+    )
+
+    duplicate_rows = grouped.filter(pl.col("count") > 1)
+    if duplicate_rows.height > 0:
+        duplicate_count = duplicate_rows.select(pl.col("count").sum()).item()
+        duplicate_pct = (
+            (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0.0
+        )
+
+        duplicate_sorted = duplicate_rows.sort("count", descending=True)
+        top_5 = duplicate_sorted.head(5)
+        # val is column 0, count is column 1
+        result_parts = [
+            f"{row[0]}({row[1]})"
+            for row in top_5.select(["val", "count"]).iter_rows()
+        ]
+        if duplicate_rows.height > 5:
+            result_parts.append(f"...{duplicate_rows.height - 5}+ more")
+        top_5_dups = " | ".join(result_parts)
+    else:
+        duplicate_count = 0
+        duplicate_pct = 0.0
+        top_5_dups = "No duplicates"
+
+    most_frequent_row = grouped.sort("count", descending=True).head(1)
+    most_frequent_value = (
+        most_frequent_row[0, 0] if most_frequent_row.height > 0 else None
+    )
+
+    # Special character count
+    special_char_count = (
+        str_series.map_elements(
+            lambda val: any(
+                not c.isalnum() for c in (val[1:] if val.startswith("-") else val)
+            ),
+            return_dtype=pl.Boolean,
+        ).sum()
+    )
+
+    # Length based stats
+    lengths = str_series.str.len_chars()
+    len_value_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_value_counts[0, 0] if len_value_counts.height > 0 else None
+    median_raw = lengths.median()
+    median_len = int(median_raw) if median_raw is not None else None
+    min_len = lengths.min()
+    max_len = lengths.max()
+
+    # Free intermediate objects explicitly
+    del grouped
+    del duplicate_rows
+    del lengths
+    gc.collect()
+
+    return {
+        "prod_data_src": prod_data_src,
+        "schema": schema,
+        "table": table,
+        "column": column_name,
+        "total_rows": int(total_rows),
+        "null_count": int(null_count),
+        "null_pct": float(round(null_pct, 2)),
+        "null_bucket": get_null_bucket(null_pct),
+        "distinct_count": int(distinct_count),
+        "unique_count": int(truly_unique_count),
+        "unique_pct": float(round(unique_pct, 2)),
+        "duplicate_count": int(duplicate_count),
+        "duplicate_pct": float(round(duplicate_pct, 2)),
+        "special_char_count": int(special_char_count),
+        "most_frequent_value": (
+            str(most_frequent_value) if most_frequent_value is not None else None
+        ),
+        "top_5_dups": top_5_dups,
+        "min_value": str(min_value) if min_value is not None else None,
+        "max_value": str(max_value) if max_value is not None else None,
+        "most_common_len": int(most_common_len) if most_common_len is not None else None,
+        "median_len": int(median_len) if median_len is not None else None,
+        "min_len": int(min_len) if min_len is not None else None,
+        "max_len": int(max_len) if max_len is not None else None,
+    }
+
+
+def parse_filename(filename):
+    name = Path(filename).stem
+    parts = name.split(".")
+
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return "unknown", parts[0]
+
+
+def profiles_to_df(profiles):
+    # Explicit schema to keep types stable and avoid builder errors
+    schema = {
+        "prod_data_src": pl.Utf8,
+        "schema": pl.Utf8,
+        "table": pl.Utf8,
+        "column": pl.Utf8,
+        "total_rows": pl.Int64,
+        "null_count": pl.Int64,
+        "null_pct": pl.Float64,
+        "null_bucket": pl.Utf8,
+        "distinct_count": pl.Int64,
+        "unique_count": pl.Int64,
+        "unique_pct": pl.Float64,
+        "duplicate_count": pl.Int64,
+        "duplicate_pct": pl.Float64,
+        "special_char_count": pl.Int64,
+        "most_frequent_value": pl.Utf8,
+        "top_5_dups": pl.Utf8,
+        "min_value": pl.Utf8,
+        "max_value": pl.Utf8,
+        "most_common_len": pl.Int64,
+        "median_len": pl.Int64,
+        "min_len": pl.Int64,
+        "max_len": pl.Int64,
+    }
+    return pl.from_dicts(profiles, schema=schema)
+
+
+def profile_parquet_files(
+    folder_path,
+    output_file="data_profile_results.parquet",
+    breakdown_column=None,
+    return_results_df=False,
+):
+    folder_path = Path(folder_path)
+    parquet_files = list(folder_path.glob("*.parquet"))
+
+    if not parquet_files:
+        print("No parquet files found in folder")
+        return None
+
+    temp_dir = folder_path / "_temp_profiles"
+
+    # Reset temp dir to avoid mixing old data
+    if temp_dir.exists():
+        print(f"Removing existing temp directory: {temp_dir}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    temp_dir.mkdir(exist_ok=True)
+    print(f"Created temp directory: {temp_dir}")
+
+    for file_path in parquet_files:
+        try:
+            print(f"\nProcessing {file_path.name}...")
+            schema, table = parse_filename(file_path.name)
+            safe_file = file_path.name.replace(".", "_")
+
+            # Get list of columns once, with a tiny read
+            df_head = pl.read_parquet(file_path, n_rows=1)
+            all_columns = df_head.columns
+            del df_head
+            gc.collect()
+
+            if breakdown_column is not None and breakdown_column not in all_columns:
+                print(
+                    f"Skipping {file_path.name}: "
+                    f"breakdown column '{breakdown_column}' not found"
+                )
+                continue
+
+            if breakdown_column is None:
+                # No breakdown - just profile each column over whole file
+                profiles = []
+                for column in all_columns:
+                    print(f"  Profiling column {column} (no breakdown)")
+                    df_col = pl.read_parquet(file_path, columns=[column])
+                    total_rows = df_col.height
+                    series = df_col[column]
+
+                    profile = profile_series(
+                        series,
+                        total_rows,
+                        "N/A",
+                        schema,
+                        table,
+                        column,
+                    )
+                    profiles.append(profile)
+
+                    del series
+                    del df_col
+                    gc.collect()
+
+                if profiles:
+                    temp_file = temp_dir / f"{safe_file}__NA.parquet"
+                    try:
+                        profiles_df = profiles_to_df(profiles)
+                        profiles_df.write_parquet(temp_file)
+                        print(
+                            f"Wrote {profiles_df.height} profiles to {temp_file.name}"
+                        )
+                    finally:
+                        del profiles_df
+                        gc.collect()
+
+                del profiles
+                gc.collect()
+                trim_memory()
+
+            else:
+                # With breakdown per prod_data_src (or other breakdown column)
+                # First read only the breakdown column to get the distinct values
+                print(f"  Reading breakdown column '{breakdown_column}'")
+                df_break = pl.read_parquet(file_path, columns=[breakdown_column])
+                breakdown_values = df_break[breakdown_column].unique().to_list()
+                del df_break
+                gc.collect()
+                trim_memory()
+
+                columns_to_profile = [c for c in all_columns if c != breakdown_column]
+                print(
+                    f"  Found {len(breakdown_values)} breakdown values, "
+                    f"{len(columns_to_profile)} columns to profile"
+                )
+
+                for i, breakdown_value in enumerate(breakdown_values, 1):
+                    print(f"  Breakdown {i}/{len(breakdown_values)}: {breakdown_value}")
+                    profiles = []
+
+                    for column in columns_to_profile:
+                        # Read only breakdown_column and this column
+                        df_col = pl.read_parquet(
+                            file_path,
+                            columns=[breakdown_column, column],
+                        )
+
+                        mask = df_col[breakdown_column] == breakdown_value
+                        total_rows = int(mask.sum())
+
+                        if total_rows > 0:
+                            series = df_col[column].filter(mask)
+
+                            profile = profile_series(
+                                series,
+                                total_rows,
+                                breakdown_value,
+                                schema,
+                                table,
+                                column,
+                            )
+                            profiles.append(profile)
+
+                            del series
+
+                        del mask
+                        del df_col
+                        gc.collect()
+
+                    if profiles:
+                        safe_breakdown = (
+                            str(breakdown_value)
+                            .replace("/", "_")
+                            .replace("\\", "_")
+                            .replace(":", "_")
+                        )
+                        temp_file = temp_dir / f"{safe_file}__{safe_breakdown}.parquet"
+                        try:
+                            profiles_df = profiles_to_df(profiles)
+                            profiles_df.write_parquet(temp_file)
+                            print(
+                                f"    Wrote {profiles_df.height} profiles "
+                                f"to {temp_file.name}"
+                            )
+                        finally:
+                            del profiles_df
+                            gc.collect()
+
+                    # clear after each prod_data_src group, then trim working set
+                    del profiles
+                    gc.collect()
+                    trim_memory()
+
+            print(f"Freed memory for {file_path.name}")
+            gc.collect()
+            trim_memory()
+
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+            gc.collect()
+            trim_memory()
+
+    # Final merge of all temp profile files
+    temp_files = list(temp_dir.glob("*.parquet"))
+
+    if not temp_files:
+        print("No profiles generated")
+        try:
+            temp_dir.rmdir()
+        except Exception:
+            pass
+        return None
+
+    print("\n============================================================")
+    print(f"Merging {len(temp_files)} temp files into {output_file} (streaming)...")
+
+    column_order = [
+        "prod_data_src",
+        "schema",
+        "table",
+        "column",
+        "total_rows",
+        "null_count",
+        "null_pct",
+        "null_bucket",
+        "distinct_count",
+        "unique_count",
+        "unique_pct",
+        "duplicate_count",
+        "duplicate_pct",
+        "special_char_count",
+        "most_frequent_value",
+        "top_5_dups",
+        "min_value",
+        "max_value",
+        "most_common_len",
+        "median_len",
+        "min_len",
+        "max_len",
+    ]
+
+    temp_pattern = str(temp_dir / "*.parquet")
+
+    # Stream to final parquet
+    lf = pl.scan_parquet(temp_pattern).select(column_order)
+    lf.sink_parquet(output_file)
+
+    # Count rows in a streaming friendly way
+    row_count = (
+        pl.scan_parquet(temp_pattern)
+        .select(pl.count().alias("count"))
+        .collect()
+        .item()
+    )
+
+    print("Cleaning up temp files...")
+    for temp_file in temp_files:
+        try:
+            temp_file.unlink()
+        except Exception as e:
+            print(f"Could not delete temp file {temp_file}: {e}")
+
+    try:
+        temp_dir.rmdir()
+    except Exception as e:
+        print(f"Could not remove temp directory {temp_dir}: {e}")
+
+    gc.collect()
+    trim_memory()
+
+    print("============================================================")
+    print(f"Profiling complete. Results saved to: {output_file}")
+    print(f"Total profiles: {row_count:,}")
+
+    if return_results_df:
+        print("Loading results DataFrame into memory (may be large)...")
+        results_df = pl.read_parquet(output_file)
+        return results_df
+
+    return None
+
+
+if __name__ == "__main__":
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+    breakdown_column = "prod_data_src"
+
+    results = profile_parquet_files(
+        folder_path,
+        output_file="data_profile_results.parquet",
+        breakdown_column=breakdown_column,
+        return_results_df=False,
+    )
+
+
+
+
+
+
+
+
+
+
+
+################################
+
+import polars as pl
 import os
 import re
 from pathlib import Path
