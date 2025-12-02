@@ -1,3 +1,22 @@
+Unique DQ Elements - True =
+SUMX(
+    VALUES(merged_df[SoR Name]),
+    CALCULATE(
+        DISTINCTCOUNT(merged_df[pde_name]),
+        FILTER(
+            merged_df,
+            merged_df[dq_check] <> "no check"
+        )
+    )
+)
+
+
+
+
+
+
+
+
 import polars as pl
 from pathlib import Path
 import gc
