@@ -1,16 +1,22 @@
-Unique DQ Elements - True =
-SUMX(
-    VALUES(merged_df[SoR Name]),
-    CALCULATE(
-        DISTINCTCOUNT(merged_df[pde_name]),
-        FILTER(
-            merged_df,
-            merged_df[dq_check] <> "no check"
+Unique DQ Elements _True :=
+COALESCE(
+    SUMX(
+        VALUES(
+            merged_df[SoR Name],
+            merged_df[Schema],
+            merged_df[Table],
+            merged_df[Attribute]
+        ),
+        CALCULATE(
+            DISTINCTCOUNT( merged_df[pde_name] ),
+            FILTER(
+                merged_df,
+                merged_df[filter_criteria] <> BLANK()
+            )
         )
-    )
+    ),
+    0
 )
-
-
 
 
 
