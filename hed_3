@@ -1,0 +1,437 @@
+import polars as pl
+from pathlib import Path
+import gc
+import shutil
+
+def get_null_bucket(null_pct):
+    if null_pct == 0:
+        return "0"
+    elif null_pct < 25:
+        return "0-24%"
+    elif null_pct < 50:
+        return "25-49%"
+    elif null_pct < 75:
+        return "50-74%"
+    elif null_pct < 100:
+        return "75-99%"
+    else:
+        return "100%"
+
+def profile_id_column(series, total_rows, prod_data_src, prod_typ, prod_subtp, 
+                      schema, table, column_name):
+    """Profile an ID column with all metrics including length analysis"""
+    
+    prod_data_src = "N/A" if prod_data_src is None else str(prod_data_src)
+    prod_typ = "N/A" if prod_typ is None else str(prod_typ)
+    prod_subtp = "N/A" if prod_subtp is None else str(prod_subtp)
+
+    null_count = series.null_count()
+    non_null_count = total_rows - null_count
+    null_pct = (null_count / total_rows * 100) if total_rows > 0 else 0.0
+
+    # Early out if everything is null
+    if non_null_count == 0:
+        return {
+            "prod_data_src": prod_data_src,
+            "prod_typ": prod_typ,
+            "prod_subtp": prod_subtp,
+            "schema": schema,
+            "table": table,
+            "column": column_name,
+            "total_rows": int(total_rows),
+            "null_count": int(null_count),
+            "null_pct": float(round(null_pct, 2)),
+            "null_bucket": get_null_bucket(null_pct),
+            "distinct_count": 0,
+            "unique_count": 0,
+            "unique_pct": 0.0,
+            "duplicate_count": 0,
+            "duplicate_pct": 0.0,
+            "special_char_count": 0,
+            "most_frequent_value": None,
+            "top_5_dups": "No duplicates",
+            "min_value": None,
+            "max_value": None,
+            "most_common_len": None,
+            "median_len": None,
+            "min_len": None,
+            "max_len": None,
+        }
+
+    distinct_count = series.n_unique()
+
+    is_numeric = series.dtype in [
+        pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+        pl.Float32, pl.Float64,
+    ]
+
+    if is_numeric:
+        try:
+            min_value = series.min()
+            max_value = series.max()
+        except Exception:
+            min_value = None
+            max_value = None
+    else:
+        min_value = None
+        max_value = None
+
+    non_null_series = series.drop_nulls()
+    # Double check len after drop
+    if non_null_series.len() == 0:
+         non_null_count = 0
+    else:
+         non_null_count = non_null_series.len()
+
+    str_series = non_null_series.cast(pl.Utf8)
+
+    # Group by value
+    grouped = str_series.to_frame("val").group_by("val").agg(
+        pl.len().alias("count")
+    )
+
+    truly_unique_count = grouped.filter(pl.col("count") == 1).height
+    unique_pct = (
+        (truly_unique_count / non_null_count * 100) if non_null_count > 0 else 0.0
+    )
+
+    duplicate_rows = grouped.filter(pl.col("count") > 1)
+    if duplicate_rows.height > 0:
+        duplicate_count = duplicate_rows.select(pl.col("count").sum()).item()
+        duplicate_pct = (
+            (duplicate_count / non_null_count * 100) if non_null_count > 0 else 0.0
+        )
+
+        duplicate_sorted = duplicate_rows.sort("count", descending=True)
+        top_5 = duplicate_sorted.head(5)
+        result_parts = [
+            f"{row[0]}({row[1]})"
+            for row in top_5.select(["val", "count"]).iter_rows()
+        ]
+        if duplicate_rows.height > 5:
+            result_parts.append(f"...{duplicate_rows.height - 5}+ more")
+        top_5_dups = " | ".join(result_parts)
+    else:
+        duplicate_count = 0
+        duplicate_pct = 0.0
+        top_5_dups = "No duplicates"
+
+    most_frequent_row = grouped.sort("count", descending=True).head(1)
+    most_frequent_value = (
+        most_frequent_row[0, 0] if most_frequent_row.height > 0 else None
+    )
+
+    # Special character count
+    special_char_count = (
+        str_series.map_elements(
+            lambda val: any(
+                not c.isalnum() for c in (val[1:] if val.startswith("-") else val)
+            ),
+            return_dtype=pl.Boolean,
+        ).sum()
+    )
+
+    # Length analysis
+    lengths = str_series.str.len_chars()
+    len_value_counts = lengths.value_counts().sort("count", descending=True)
+    most_common_len = len_value_counts[0, 0] if len_value_counts.height > 0 else None
+    median_raw = lengths.median()
+    median_len = int(median_raw) if median_raw is not None else None
+    min_len = lengths.min()
+    max_len = lengths.max()
+
+    del grouped
+    del duplicate_rows
+    del lengths
+    gc.collect()
+
+    return {
+        "prod_data_src": prod_data_src,
+        "prod_typ": prod_typ,
+        "prod_subtp": prod_subtp,
+        "schema": schema,
+        "table": table,
+        "column": column_name,
+        "total_rows": int(total_rows),
+        "null_count": int(null_count),
+        "null_pct": float(round(null_pct, 2)),
+        "null_bucket": get_null_bucket(null_pct),
+        "distinct_count": int(distinct_count),
+        "unique_count": int(truly_unique_count),
+        "unique_pct": float(round(unique_pct, 2)),
+        "duplicate_count": int(duplicate_count),
+        "duplicate_pct": float(round(duplicate_pct, 2)),
+        "special_char_count": int(special_char_count),
+        "most_frequent_value": (
+            str(most_frequent_value) if most_frequent_value is not None else None
+        ),
+        "top_5_dups": top_5_dups,
+        "min_value": str(min_value) if min_value is not None else None,
+        "max_value": str(max_value) if max_value is not None else None,
+        "most_common_len": int(most_common_len) if most_common_len is not None else None,
+        "median_len": int(median_len) if median_len is not None else None,
+        "min_len": int(min_len) if min_len is not None else None,
+        "max_len": int(max_len) if max_len is not None else None,
+    }
+
+def parse_filename(filename):
+    name = Path(filename).stem
+    parts = name.split(".")
+
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    elif len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return "unknown", parts[0]
+
+def profiles_to_df(profiles):
+    schema = {
+        "prod_data_src": pl.Utf8,
+        "prod_typ": pl.Utf8,
+        "prod_subtp": pl.Utf8,
+        "schema": pl.Utf8,
+        "table": pl.Utf8,
+        "column": pl.Utf8,
+        "total_rows": pl.Int64,
+        "null_count": pl.Int64,
+        "null_pct": pl.Float64,
+        "null_bucket": pl.Utf8,
+        "distinct_count": pl.Int64,
+        "unique_count": pl.Int64,
+        "unique_pct": pl.Float64,
+        "duplicate_count": pl.Int64,
+        "duplicate_pct": pl.Float64,
+        "special_char_count": pl.Int64,
+        "most_frequent_value": pl.Utf8,
+        "top_5_dups": pl.Utf8,
+        "min_value": pl.Utf8,
+        "max_value": pl.Utf8,
+        "most_common_len": pl.Int64,
+        "median_len": pl.Int64,
+        "min_len": pl.Int64,
+        "max_len": pl.Int64,
+    }
+    return pl.from_dicts(profiles, schema=schema)
+
+def analyze_id_columns(
+    folder_path,
+    output_file="id_analysis.parquet",
+    return_results_df=False,
+):
+    folder_path = Path(folder_path)
+    parquet_files = list(folder_path.glob("*.parquet"))
+
+    if not parquet_files:
+        print("No parquet files found in folder")
+        return None
+
+    temp_dir = folder_path / "_temp_id_profiles"
+
+    if temp_dir.exists():
+        print(f"Removing existing temp directory: {temp_dir}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    temp_dir.mkdir(exist_ok=True)
+    print(f"Created temp directory: {temp_dir}")
+
+    for file_path in parquet_files:
+        try:
+            print(f"\nReading {file_path.name}...")
+            df = pl.read_parquet(file_path)
+            
+            # --- FIX 1: Normalize columns to lowercase ---
+            # This ensures we find 'prod_subtp' even if it is 'PROD_SUBTP'
+            df.columns = [c.lower() for c in df.columns]
+            
+            schema, table = parse_filename(file_path.name)
+
+            # Find ID columns (already lowercased above)
+            id_columns = [col for col in df.columns if "_id" in col]
+            
+            if not id_columns:
+                print(f"  No ID columns found in {file_path.name}, skipping...")
+                del df
+                gc.collect()
+                continue
+
+            print(f"  Found {len(id_columns)} ID columns: {id_columns}")
+
+            # Check for hierarchy columns
+            has_prod_data_src = "prod_data_src" in df.columns
+            has_prod_typ = "prod_typ" in df.columns
+            has_prod_subtp = "prod_subtp" in df.columns
+
+            print(f"  Has prod_data_src: {has_prod_data_src}, prod_typ: {has_prod_typ}, prod_subtp: {has_prod_subtp}")
+
+            safe_file = file_path.name.replace(".", "_")
+
+            if not has_prod_data_src:
+                print(f"  No prod_data_src column, skipping hierarchical analysis...")
+                del df
+                gc.collect()
+                continue
+
+            # Get distinct prod_data_src values
+            prod_data_src_values = df["prod_data_src"].unique().to_list()
+            print(f"  Found {len(prod_data_src_values)} prod_data_src values")
+
+            for pds_idx, prod_data_src_val in enumerate(prod_data_src_values, 1):
+                pds_mask = df["prod_data_src"] == prod_data_src_val
+                
+                # Hierarchical analysis
+                if has_prod_typ:
+                    prod_typ_values = df.filter(pds_mask)["prod_typ"].unique().to_list()
+                else:
+                    prod_typ_values = [None]
+
+                print(f"    [{pds_idx}/{len(prod_data_src_values)}] Processing {prod_data_src_val}: {len(prod_typ_values)} prod_typ values")
+
+                for typ_val in prod_typ_values:
+                    # --- FIX 2: Correct mask logic for Null/None values ---
+                    if has_prod_typ:
+                        if typ_val is not None:
+                            typ_mask = pds_mask & (df["prod_typ"] == typ_val)
+                        else:
+                            # explicitly look for nulls, don't just grab everything
+                            typ_mask = pds_mask & (df["prod_typ"].is_null())
+                    else:
+                        typ_mask = pds_mask
+
+                    if int(typ_mask.sum()) == 0:
+                        continue
+
+                    # Get distinct prod_subtp values
+                    if has_prod_subtp:
+                        prod_subtp_values = df.filter(typ_mask)["prod_subtp"].unique().to_list()
+                    else:
+                        prod_subtp_values = [None]
+
+                    for subtp_val in prod_subtp_values:
+                        # --- FIX 3: Correct mask logic for subtp Null/None values ---
+                        if has_prod_subtp:
+                            if subtp_val is not None:
+                                subtp_mask = typ_mask & (df["prod_subtp"] == subtp_val)
+                            else:
+                                # explicitly look for nulls
+                                subtp_mask = typ_mask & (df["prod_subtp"].is_null())
+                        else:
+                            subtp_mask = typ_mask
+
+                        subtp_total_rows = int(subtp_mask.sum())
+                        if subtp_total_rows == 0:
+                            continue
+
+                        # Profile all ID columns at this level
+                        profiles = []
+                        for column in id_columns:
+                            try:
+                                series = df[column].filter(subtp_mask)
+                                profile = profile_id_column(
+                                    series, subtp_total_rows, 
+                                    prod_data_src_val, typ_val, subtp_val,
+                                    schema, table, column
+                                )
+                                profiles.append(profile)
+                            except Exception as e:
+                                print(f"      Error profiling {column}: {e}")
+
+                        # Write profiles
+                        if profiles:
+                            safe_pds = str(prod_data_src_val).replace("/", "_").replace("\\", "_").replace(":", "_")
+                            safe_typ = str(typ_val).replace("/", "_").replace("\\", "_").replace(":", "_") if typ_val else "NA"
+                            safe_subtp = str(subtp_val).replace("/", "_").replace("\\", "_").replace(":", "_") if subtp_val else "NA"
+                            temp_file = temp_dir / f"{safe_file}__{safe_pds}__{safe_typ}__{safe_subtp}.parquet"
+                            
+                            profiles_df = profiles_to_df(profiles)
+                            profiles_df.write_parquet(temp_file)
+                            
+                        del profiles
+                        del subtp_mask
+                        gc.collect()
+
+                    del typ_mask
+                    gc.collect()
+
+                del pds_mask
+                gc.collect()
+
+            del df
+            gc.collect()
+            print(f"  Completed {file_path.name}")
+
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Merge all temp files
+    temp_files = list(temp_dir.glob("*.parquet"))
+
+    if not temp_files:
+        print("No profiles generated")
+        try:
+            temp_dir.rmdir()
+        except Exception:
+            pass
+        return None
+
+    print("\n============================================================")
+    print(f"Merging {len(temp_files)} temp files into {output_file}...")
+
+    column_order = [
+        "prod_data_src", "prod_typ", "prod_subtp",
+        "schema", "table", "column",
+        "total_rows", "null_count", "null_pct", "null_bucket",
+        "distinct_count", "unique_count", "unique_pct",
+        "duplicate_count", "duplicate_pct", "special_char_count",
+        "most_frequent_value", "top_5_dups",
+        "min_value", "max_value",
+        "most_common_len", "median_len", "min_len", "max_len",
+    ]
+
+    temp_pattern = str(temp_dir / "*.parquet")
+    lf = pl.scan_parquet(temp_pattern).select(column_order)
+    lf.sink_parquet(output_file)
+
+    row_count = (
+        pl.scan_parquet(temp_pattern)
+        .select(pl.count().alias("count"))
+        .collect()
+        .item()
+    )
+
+    print("Cleaning up temp files...")
+    for temp_file in temp_files:
+        try:
+            temp_file.unlink()
+        except Exception:
+            pass
+
+    try:
+        temp_dir.rmdir()
+    except Exception:
+        pass
+
+    gc.collect()
+
+    print("============================================================")
+    print(f"ID column analysis complete. Results saved to: {output_file}")
+    print(f"Total profiles: {row_count:,}")
+
+    if return_results_df:
+        print("Loading results DataFrame into memory...")
+        results_df = pl.read_parquet(output_file)
+        return results_df
+
+    return None
+
+if __name__ == "__main__":
+    folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
+
+    results = analyze_id_columns(
+        folder_path,
+        output_file="id_analysis.parquet",
+        return_results_df=False,
+    )
