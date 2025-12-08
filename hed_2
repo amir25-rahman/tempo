@@ -19,12 +19,10 @@ def get_null_bucket(null_pct):
         return "100%"
 
 
-def profile_series(series, total_rows, prod_data_src, schema, table, column_name, 
-                   prod_typ=None, prod_subtp=None, is_prod_subtp_level=False):
-    """Extended to include prod_typ and prod_subtp for hierarchical analysis
-    is_prod_subtp_level: When True, populate prod_subtp_* length columns instead of regular length columns
-    """
-    # Normalize prod_data_src so the column is always string
+def profile_id_column(series, total_rows, prod_data_src, prod_typ, prod_subtp, 
+                      schema, table, column_name):
+    """Profile an ID column with all metrics including length analysis"""
+    
     prod_data_src = "N/A" if prod_data_src is None else str(prod_data_src)
     prod_typ = "N/A" if prod_typ is None else str(prod_typ)
     prod_subtp = "N/A" if prod_subtp is None else str(prod_subtp)
@@ -35,7 +33,7 @@ def profile_series(series, total_rows, prod_data_src, schema, table, column_name
 
     # Early out if everything is null
     if non_null_count == 0:
-        result = {
+        return {
             "prod_data_src": prod_data_src,
             "prod_typ": prod_typ,
             "prod_subtp": prod_subtp,
@@ -60,14 +58,8 @@ def profile_series(series, total_rows, prod_data_src, schema, table, column_name
             "median_len": None,
             "min_len": None,
             "max_len": None,
-            "prod_subtp_most_common_len": None,
-            "prod_subtp_median_len": None,
-            "prod_subtp_min_len": None,
-            "prod_subtp_max_len": None,
         }
-        return result
 
-    # Distinct is on the full series including nulls
     distinct_count = series.n_unique()
 
     is_numeric = series.dtype in [
@@ -87,17 +79,15 @@ def profile_series(series, total_rows, prod_data_src, schema, table, column_name
         min_value = None
         max_value = None
 
-    # Work only on non null values for string based stats
     non_null_series = series.drop_nulls()
     if non_null_series.len() == 0:
         non_null_count = 0
     else:
         non_null_count = non_null_series.len()
 
-    # String representation for grouping, length, special char
     str_series = non_null_series.cast(pl.Utf8)
 
-    # Group by value on the string representation
+    # Group by value
     grouped = str_series.to_frame("val").group_by("val").agg(
         pl.len().alias("count")
     )
@@ -143,38 +133,15 @@ def profile_series(series, total_rows, prod_data_src, schema, table, column_name
         ).sum()
     )
 
-    # Length based stats
+    # Length analysis
     lengths = str_series.str.len_chars()
     len_value_counts = lengths.value_counts().sort("count", descending=True)
-    most_common_len_val = len_value_counts[0, 0] if len_value_counts.height > 0 else None
+    most_common_len = len_value_counts[0, 0] if len_value_counts.height > 0 else None
     median_raw = lengths.median()
-    median_len_val = int(median_raw) if median_raw is not None else None
-    min_len_val = lengths.min()
-    max_len_val = lengths.max()
+    median_len = int(median_raw) if median_raw is not None else None
+    min_len = lengths.min()
+    max_len = lengths.max()
 
-    # Assign to appropriate column set based on level
-    if is_prod_subtp_level:
-        # This is prod_subtp level analysis - populate prod_subtp_* columns
-        most_common_len = None
-        median_len = None
-        min_len = None
-        max_len = None
-        prod_subtp_most_common_len = int(most_common_len_val) if most_common_len_val is not None else None
-        prod_subtp_median_len = int(median_len_val) if median_len_val is not None else None
-        prod_subtp_min_len = int(min_len_val) if min_len_val is not None else None
-        prod_subtp_max_len = int(max_len_val) if max_len_val is not None else None
-    else:
-        # This is regular level analysis - populate regular length columns
-        most_common_len = int(most_common_len_val) if most_common_len_val is not None else None
-        median_len = int(median_len_val) if median_len_val is not None else None
-        min_len = int(min_len_val) if min_len_val is not None else None
-        max_len = int(max_len_val) if max_len_val is not None else None
-        prod_subtp_most_common_len = None
-        prod_subtp_median_len = None
-        prod_subtp_min_len = None
-        prod_subtp_max_len = None
-
-    # Free some intermediate objects explicitly
     del grouped
     del duplicate_rows
     del lengths
@@ -203,14 +170,10 @@ def profile_series(series, total_rows, prod_data_src, schema, table, column_name
         "top_5_dups": top_5_dups,
         "min_value": str(min_value) if min_value is not None else None,
         "max_value": str(max_value) if max_value is not None else None,
-        "most_common_len": most_common_len,
-        "median_len": median_len,
-        "min_len": min_len,
-        "max_len": max_len,
-        "prod_subtp_most_common_len": prod_subtp_most_common_len,
-        "prod_subtp_median_len": prod_subtp_median_len,
-        "prod_subtp_min_len": prod_subtp_min_len,
-        "prod_subtp_max_len": prod_subtp_max_len,
+        "most_common_len": int(most_common_len) if most_common_len is not None else None,
+        "median_len": int(median_len) if median_len is not None else None,
+        "min_len": int(min_len) if min_len is not None else None,
+        "max_len": int(max_len) if max_len is not None else None,
     }
 
 
@@ -227,7 +190,6 @@ def parse_filename(filename):
 
 
 def profiles_to_df(profiles):
-    """Extended schema to include prod_typ, prod_subtp, and prod_subtp_* length columns"""
     schema = {
         "prod_data_src": pl.Utf8,
         "prod_typ": pl.Utf8,
@@ -253,20 +215,25 @@ def profiles_to_df(profiles):
         "median_len": pl.Int64,
         "min_len": pl.Int64,
         "max_len": pl.Int64,
-        "prod_subtp_most_common_len": pl.Int64,
-        "prod_subtp_median_len": pl.Int64,
-        "prod_subtp_min_len": pl.Int64,
-        "prod_subtp_max_len": pl.Int64,
     }
     return pl.from_dicts(profiles, schema=schema)
 
 
-def profile_parquet_files(
+def analyze_id_columns(
     folder_path,
-    output_file="data_profile_results.parquet",
-    breakdown_column=None,
+    output_file="id_analysis.parquet",
     return_results_df=False,
 ):
+    """
+    Analyze all columns with '_id' in their name with hierarchical breakdown:
+    1. Group by prod_data_src
+    2. Within each prod_data_src, group by prod_typ (show distinct values)
+    3. Within each prod_typ, group by prod_subtp (show distinct values)
+    4. Perform length analysis at the prod_subtp level
+    
+    If prod_typ or prod_subtp don't exist, use NULL and continue.
+    If both don't exist, skip hierarchical breakdown and use default analysis.
+    """
     folder_path = Path(folder_path)
     parquet_files = list(folder_path.glob("*.parquet"))
 
@@ -274,9 +241,8 @@ def profile_parquet_files(
         print("No parquet files found in folder")
         return None
 
-    temp_dir = folder_path / "_temp_profiles"
+    temp_dir = folder_path / "_temp_id_profiles"
 
-    # Reset temp dir to avoid mixing old data
     if temp_dir.exists():
         print(f"Removing existing temp directory: {temp_dir}")
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -290,201 +256,147 @@ def profile_parquet_files(
             df = pl.read_parquet(file_path)
             schema, table = parse_filename(file_path.name)
 
-            if breakdown_column is not None and breakdown_column not in df.columns:
-                print(
-                    f"Skipping {file_path.name}: "
-                    f"breakdown column '{breakdown_column}' not found"
-                )
+            # Find ID columns
+            id_columns = [col for col in df.columns if "_id" in col.lower()]
+            
+            if not id_columns:
+                print(f"  No ID columns found in {file_path.name}, skipping...")
                 del df
                 gc.collect()
                 continue
 
-            safe_file = file_path.name.replace(".", "_")
+            print(f"  Found {len(id_columns)} ID columns: {id_columns}")
 
             # Check for hierarchy columns
+            has_prod_data_src = "prod_data_src" in df.columns
             has_prod_typ = "prod_typ" in df.columns
             has_prod_subtp = "prod_subtp" in df.columns
-            
-            # Identify _id columns
-            id_columns = [col for col in df.columns if "_id" in col.lower()]
-            non_id_columns = [col for col in df.columns if "_id" not in col.lower()]
 
-            if breakdown_column is None:
-                profiles = []
-                total_rows = df.height
-                for column in df.columns:
-                    try:
-                        series = df[column]
-                        profile = profile_series(
-                            series, total_rows, "N/A", schema, table, column
-                        )
-                        profiles.append(profile)
-                    except Exception as e:
-                        print(f"Error profiling column {column}: {e}")
+            print(f"  Has prod_data_src: {has_prod_data_src}, prod_typ: {has_prod_typ}, prod_subtp: {has_prod_subtp}")
 
-                if profiles:
-                    temp_file = temp_dir / f"{safe_file}__NA.parquet"
-                    try:
-                        profiles_df = profiles_to_df(profiles)
-                        profiles_df.write_parquet(temp_file)
-                        print(f"Wrote {profiles_df.height} profiles to {temp_file.name}")
-                    except Exception as e:
-                        print(f"Error building profile DataFrame for {file_path.name}: {e}")
+            safe_file = file_path.name.replace(".", "_")
 
-                del profiles
+            if not has_prod_data_src:
+                print(f"  No prod_data_src column, skipping hierarchical analysis...")
+                del df
                 gc.collect()
+                continue
 
-            else:
-                breakdown_values = df[breakdown_column].unique().to_list()
-                columns_to_profile = [col for col in df.columns if col != breakdown_column]
+            # Get distinct prod_data_src values
+            prod_data_src_values = df["prod_data_src"].unique().to_list()
+            print(f"  Found {len(prod_data_src_values)} prod_data_src values")
+
+            for pds_idx, prod_data_src_val in enumerate(prod_data_src_values, 1):
+                pds_mask = df["prod_data_src"] == prod_data_src_val
                 
-                print(f"Found {len(breakdown_values)} breakdown values")
-                print(f"ID columns: {len(id_columns)}, Non-ID columns: {len(non_id_columns)}")
-                print(f"Has prod_typ: {has_prod_typ}, Has prod_subtp: {has_prod_subtp}")
-
-                for i, breakdown_value in enumerate(breakdown_values, 1):
-                    mask = df[breakdown_column] == breakdown_value
-                    total_rows = int(mask.sum())
-
-                    if total_rows == 0:
-                        del mask
-                        gc.collect()
-                        continue
-
+                if not has_prod_typ and not has_prod_subtp:
+                    # No hierarchy - use default analysis
+                    print(f"    [{pds_idx}/{len(prod_data_src_values)}] No hierarchy, using default analysis for {prod_data_src_val}...")
+                    
                     profiles = []
-
-                    # Profile non-ID columns at prod_data_src level only
-                    for column in non_id_columns:
-                        if column == breakdown_column:
-                            continue
+                    pds_total_rows = int(pds_mask.sum())
+                    
+                    for column in id_columns:
                         try:
-                            series = df[column].filter(mask)
-                            # Non-ID columns: regular length analysis at prod_data_src level
-                            profile = profile_series(
-                                series, total_rows, breakdown_value, schema, table, column,
-                                is_prod_subtp_level=False
+                            series = df[column].filter(pds_mask)
+                            profile = profile_id_column(
+                                series, pds_total_rows, prod_data_src_val, None, None,
+                                schema, table, column
                             )
                             profiles.append(profile)
                         except Exception as e:
-                            print(f"Error profiling non-ID column {column}: {e}")
-
-                    # Handle ID columns with hierarchical breakdown
-                    if id_columns:
-                        if has_prod_typ or has_prod_subtp:
-                            # Hierarchical breakdown available
-                            print(f"  [{i}/{len(breakdown_values)}] Processing hierarchical breakdown for ID columns...")
-                            
-                            # First pass: Get distinct prod_data_src level stats for ID columns (regular length columns)
-                            for column in id_columns:
-                                try:
-                                    series = df[column].filter(mask)
-                                    profile = profile_series(
-                                        series, total_rows, breakdown_value, schema, table, column,
-                                        is_prod_subtp_level=False  # Regular length analysis at prod_data_src level
-                                    )
-                                    profiles.append(profile)
-                                except Exception as e:
-                                    print(f"Error profiling ID column {column} at prod_data_src level: {e}")
-                            
-                            # Second pass: Get unique prod_typ values for this prod_data_src
-                            if has_prod_typ:
-                                prod_typ_values = df.filter(mask)[breakdown_column, "prod_typ"].unique()["prod_typ"].to_list()
-                            else:
-                                prod_typ_values = [None]
-                            
-                            for prod_typ_val in prod_typ_values:
-                                # Create mask for this prod_typ
-                                if has_prod_typ and prod_typ_val is not None:
-                                    typ_mask = mask & (df["prod_typ"] == prod_typ_val)
-                                else:
-                                    typ_mask = mask
-                                
-                                typ_total_rows = int(typ_mask.sum())
-                                if typ_total_rows == 0:
-                                    continue
-                                
-                                # Get unique prod_subtp values for this prod_typ
-                                if has_prod_subtp:
-                                    if has_prod_typ and prod_typ_val is not None:
-                                        prod_subtp_values = df.filter(typ_mask)[breakdown_column, "prod_typ", "prod_subtp"].unique()["prod_subtp"].to_list()
-                                    else:
-                                        prod_subtp_values = df.filter(typ_mask)[breakdown_column, "prod_subtp"].unique()["prod_subtp"].to_list()
-                                else:
-                                    prod_subtp_values = [None]
-                                
-                                for prod_subtp_val in prod_subtp_values:
-                                    # Create mask for this prod_subtp
-                                    if has_prod_subtp and prod_subtp_val is not None:
-                                        subtp_mask = typ_mask & (df["prod_subtp"] == prod_subtp_val)
-                                    else:
-                                        subtp_mask = typ_mask
-                                    
-                                    subtp_total_rows = int(subtp_mask.sum())
-                                    if subtp_total_rows == 0:
-                                        continue
-                                    
-                                    # Profile all ID columns at this level
-                                    # Use prod_subtp_* length columns at this finest grain
-                                    for column in id_columns:
-                                        try:
-                                            series = df[column].filter(subtp_mask)
-                                            profile = profile_series(
-                                                series, subtp_total_rows, breakdown_value, 
-                                                schema, table, column,
-                                                prod_typ=prod_typ_val, prod_subtp=prod_subtp_val,
-                                                is_prod_subtp_level=True  # Use prod_subtp_* length columns
-                                            )
-                                            profiles.append(profile)
-                                        except Exception as e:
-                                            print(f"Error profiling ID column {column} at prod_subtp level: {e}")
-                                    
-                                    del subtp_mask
-                                    gc.collect()
-                                
-                                del typ_mask
-                                gc.collect()
-                        else:
-                            # No hierarchy columns, use default analysis for ID columns (regular length columns only)
-                            print(f"  [{i}/{len(breakdown_values)}] No hierarchy columns found, using default analysis for ID columns...")
-                            for column in id_columns:
-                                try:
-                                    series = df[column].filter(mask)
-                                    profile = profile_series(
-                                        series, total_rows, breakdown_value, schema, table, column,
-                                        is_prod_subtp_level=False  # Regular length columns when no hierarchy
-                                    )
-                                    profiles.append(profile)
-                                except Exception as e:
-                                    print(f"Error profiling ID column {column}: {e}")
-
-                    # Write profiles for this breakdown value
+                            print(f"      Error profiling {column}: {e}")
+                    
                     if profiles:
-                        safe_breakdown = (
-                            str(breakdown_value)
-                            .replace("/", "_")
-                            .replace("\\", "_")
-                            .replace(":", "_")
-                        )
-                        temp_file = temp_dir / f"{safe_file}__{safe_breakdown}.parquet"
-                        try:
+                        safe_pds = str(prod_data_src_val).replace("/", "_").replace("\\", "_").replace(":", "_")
+                        temp_file = temp_dir / f"{safe_file}__{safe_pds}.parquet"
+                        profiles_df = profiles_to_df(profiles)
+                        profiles_df.write_parquet(temp_file)
+                        print(f"      Wrote {profiles_df.height} profiles")
+                    
+                    del profiles
+                    gc.collect()
+                    continue
+
+                # Hierarchical analysis
+                # Get distinct prod_typ values
+                if has_prod_typ:
+                    prod_typ_values = df.filter(pds_mask)["prod_typ"].unique().to_list()
+                else:
+                    prod_typ_values = [None]
+
+                print(f"    [{pds_idx}/{len(prod_data_src_values)}] Processing {prod_data_src_val}: {len(prod_typ_values)} prod_typ values")
+
+                for typ_val in prod_typ_values:
+                    # Create mask for this prod_typ
+                    if has_prod_typ and typ_val is not None:
+                        typ_mask = pds_mask & (df["prod_typ"] == typ_val)
+                    else:
+                        typ_mask = pds_mask
+
+                    if int(typ_mask.sum()) == 0:
+                        continue
+
+                    # Get distinct prod_subtp values
+                    if has_prod_subtp:
+                        prod_subtp_values = df.filter(typ_mask)["prod_subtp"].unique().to_list()
+                    else:
+                        prod_subtp_values = [None]
+
+                    for subtp_val in prod_subtp_values:
+                        # Create mask for this prod_subtp
+                        if has_prod_subtp and subtp_val is not None:
+                            subtp_mask = typ_mask & (df["prod_subtp"] == subtp_val)
+                        else:
+                            subtp_mask = typ_mask
+
+                        subtp_total_rows = int(subtp_mask.sum())
+                        if subtp_total_rows == 0:
+                            continue
+
+                        # Profile all ID columns at this level
+                        profiles = []
+                        for column in id_columns:
+                            try:
+                                series = df[column].filter(subtp_mask)
+                                profile = profile_id_column(
+                                    series, subtp_total_rows, 
+                                    prod_data_src_val, typ_val, subtp_val,
+                                    schema, table, column
+                                )
+                                profiles.append(profile)
+                            except Exception as e:
+                                print(f"      Error profiling {column}: {e}")
+
+                        # Write profiles
+                        if profiles:
+                            safe_pds = str(prod_data_src_val).replace("/", "_").replace("\\", "_").replace(":", "_")
+                            safe_typ = str(typ_val).replace("/", "_").replace("\\", "_").replace(":", "_") if typ_val else "NA"
+                            safe_subtp = str(subtp_val).replace("/", "_").replace("\\", "_").replace(":", "_") if subtp_val else "NA"
+                            temp_file = temp_dir / f"{safe_file}__{safe_pds}__{safe_typ}__{safe_subtp}.parquet"
+                            
                             profiles_df = profiles_to_df(profiles)
                             profiles_df.write_parquet(temp_file)
-                            print(f"  [{i}/{len(breakdown_values)}] Wrote {profiles_df.height} profiles to {temp_file.name}")
-                        except Exception as e:
-                            print(f"Error building profile DataFrame: {e}")
+                            print(f"      Wrote {profiles_df.height} profiles for typ={typ_val}, subtp={subtp_val}")
 
-                    del profiles
-                    del mask
+                        del profiles
+                        del subtp_mask
+                        gc.collect()
+
+                    del typ_mask
                     gc.collect()
+
+                del pds_mask
+                gc.collect()
 
             del df
             gc.collect()
-            print(f"Freed memory for {file_path.name}")
+            print(f"  Completed {file_path.name}")
 
         except Exception as e:
             print(f"Error processing {file_path.name}: {e}")
 
-    # Final merge of all temp profile files
+    # Merge all temp files
     temp_files = list(temp_dir.glob("*.parquet"))
 
     if not temp_files:
@@ -496,46 +408,23 @@ def profile_parquet_files(
         return None
 
     print("\n============================================================")
-    print(f"Merging {len(temp_files)} temp files into {output_file} (streaming)...")
+    print(f"Merging {len(temp_files)} temp files into {output_file}...")
 
     column_order = [
-        "prod_data_src",
-        "prod_typ",
-        "prod_subtp",
-        "schema",
-        "table",
-        "column",
-        "total_rows",
-        "null_count",
-        "null_pct",
-        "null_bucket",
-        "distinct_count",
-        "unique_count",
-        "unique_pct",
-        "duplicate_count",
-        "duplicate_pct",
-        "special_char_count",
-        "most_frequent_value",
-        "top_5_dups",
-        "min_value",
-        "max_value",
-        "most_common_len",
-        "median_len",
-        "min_len",
-        "max_len",
-        "prod_subtp_most_common_len",
-        "prod_subtp_median_len",
-        "prod_subtp_min_len",
-        "prod_subtp_max_len",
+        "prod_data_src", "prod_typ", "prod_subtp",
+        "schema", "table", "column",
+        "total_rows", "null_count", "null_pct", "null_bucket",
+        "distinct_count", "unique_count", "unique_pct",
+        "duplicate_count", "duplicate_pct", "special_char_count",
+        "most_frequent_value", "top_5_dups",
+        "min_value", "max_value",
+        "most_common_len", "median_len", "min_len", "max_len",
     ]
 
     temp_pattern = str(temp_dir / "*.parquet")
-
-    # Stream to final parquet
     lf = pl.scan_parquet(temp_pattern).select(column_order)
     lf.sink_parquet(output_file)
 
-    # Count rows in a streaming friendly way
     row_count = (
         pl.scan_parquet(temp_pattern)
         .select(pl.count().alias("count"))
@@ -547,22 +436,22 @@ def profile_parquet_files(
     for temp_file in temp_files:
         try:
             temp_file.unlink()
-        except Exception as e:
-            print(f"Could not delete temp file {temp_file}: {e}")
+        except Exception:
+            pass
 
     try:
         temp_dir.rmdir()
-    except Exception as e:
-        print(f"Could not remove temp directory {temp_dir}: {e}")
+    except Exception:
+        pass
 
     gc.collect()
 
     print("============================================================")
-    print(f"Profiling complete. Results saved to: {output_file}")
+    print(f"ID column analysis complete. Results saved to: {output_file}")
     print(f"Total profiles: {row_count:,}")
 
     if return_results_df:
-        print("Loading results DataFrame into memory (may be large)...")
+        print("Loading results DataFrame into memory...")
         results_df = pl.read_parquet(output_file)
         return results_df
 
@@ -571,11 +460,9 @@ def profile_parquet_files(
 
 if __name__ == "__main__":
     folder_path = "C:/Users/NULL/Desktop/pdf codes/DD/v2"
-    breakdown_column = "prod_data_src"
 
-    results = profile_parquet_files(
+    results = analyze_id_columns(
         folder_path,
-        output_file="data_profile_results.parquet",
-        breakdown_column=breakdown_column,
+        output_file="id_analysis.parquet",
         return_results_df=False,
     )
