@@ -1,3 +1,44 @@
+Sub ColorDE_FromF()
+    Dim r As Range
+    Dim iconIdx As Long
+
+    For Each r In Range("F2:F100")   ' adjust range
+
+        ' clear color first
+        Range("D" & r.Row & ":E" & r.Row).Interior.Pattern = xlNone
+
+        ' skip merged cells that are not top-left
+        If r.MergeCells Then
+            If r.Address <> r.MergeArea.Cells(1).Address Then GoTo NextRow
+        End If
+
+        ' skip blanks / errors
+        If Trim(r.Text) = "" Then GoTo NextRow
+        If IsError(r.Value) Then GoTo NextRow
+
+        ' get icon result
+        iconIdx = r.DisplayFormat.IconIndex
+
+        With Range("D" & r.Row & ":E" & r.Row).Interior
+            Select Case iconIdx
+                Case 3    ' green up
+                    .Color = RGB(0, 176, 80)
+                Case 2    ' yellow dash
+                    .Color = RGB(255, 192, 0)
+                Case 1    ' red down
+                    .Color = RGB(192, 0, 0)
+            End Select
+        End With
+
+NextRow:
+    Next r
+End Sub
+
+
+
+
+
+
 
 Private Sub Worksheet_Change(ByVal Target As Range)
     If Intersect(Target, Range("F2:F100")) Is Nothing Then Exit Sub
