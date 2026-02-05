@@ -1,3 +1,14 @@
+Private Sub Worksheet_Change(ByVal Target As Range)
+    If Intersect(Target, Range("F2:F100")) Is Nothing Then Exit Sub
+
+    Application.EnableEvents = False
+    ColorDE_FromF
+    Application.EnableEvents = True
+End Sub
+
+
+
+
 Sub ColorDE_FromF()
     Dim r As Range
     Dim iconIdx As Long
