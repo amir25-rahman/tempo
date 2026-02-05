@@ -1,3 +1,16 @@
+
+Private Sub Worksheet_Calculate()
+    Dim r As Range
+    For Each r In Range("F2:F100")   ' adjust range
+        Range("D" & r.Row & ":E" & r.Row).Interior.Color = _
+            r.DisplayFormat.Interior.Color
+    Next r
+End Sub
+
+
+
+
+
 Private Sub Worksheet_Calculate()
     Dim r As Range
     For Each r In Range("F2:F100")  ' adjust range
