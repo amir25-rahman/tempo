@@ -1,3 +1,52 @@
+Sub SyncIconColorDE()
+    Dim r As Range
+    Dim currVal As Variant, prevVal As Variant
+    Dim colorVal As Long
+
+    ' Loop through F2:F100 (adjust range as needed)
+    For Each r In Range("F2:F100")
+
+        ' Skip merged cells that are not top-left
+        If r.MergeCells Then
+            If r.Address <> r.MergeArea.Cells(1).Address Then GoTo NextRow
+        End If
+
+        ' Clear color by default
+        Range("D" & r.Row & ":E" & r.Row).Interior.Pattern = xlNone
+
+        ' Skip blanks/errors
+        If Trim(r.Text) = "" Then GoTo NextRow
+        If IsError(r.Value) Then GoTo NextRow
+        If Not IsNumeric(r.Value) Then GoTo NextRow
+
+        ' Get current and previous row value
+        currVal = r.Value
+        prevVal = r.Offset(-1, 0).Value
+
+        ' Normalize percentages (0.67 → 67)
+        If currVal <= 1 Then currVal = currVal * 100
+        If prevVal <= 1 Then prevVal = prevVal * 100
+
+        ' Determine icon color based on comparison
+        ' Up (green), Down (red), Dash (yellow)
+        If currVal > prevVal Then
+            colorVal = RGB(0, 176, 80)      ' green up
+        ElseIf currVal < prevVal Then
+            colorVal = RGB(192, 0, 0)       ' red down
+        Else
+            colorVal = RGB(255, 192, 0)     ' yellow dash
+        End If
+
+        ' Apply color to D and E
+        Range("D" & r.Row & ":E" & r.Row).Interior.Color = colorVal
+
+NextRow:
+    Next r
+End Sub
+
+
+
+
 Sub ColorDE_FromF()
     Dim r As Range
     Dim colorVal As Long
