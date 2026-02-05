@@ -1,4 +1,33 @@
 
+Sub ColorDE_FromF()
+    Dim r As Range
+    Dim v As Double
+
+    For Each r In Range("F2:F100")   ' adjust range
+        If IsNumeric(r.Value) Then
+            v = r.Value
+
+            With Range("D" & r.Row & ":E" & r.Row).Interior
+                If v >= 67 Then
+                    .Color = RGB(0, 176, 80)        ' green
+                ElseIf v >= 33 Then
+                    .Color = RGB(255, 192, 0)       ' yellow
+                Else
+                    .Color = RGB(192, 0, 0)         ' red
+                End If
+            End With
+        Else
+            Range("D" & r.Row & ":E" & r.Row).Interior.Pattern = xlNone
+        End If
+    Next r
+End Sub
+
+
+
+
+
+
+
 Private Sub Worksheet_Calculate()
     Dim r As Range
     For Each r In Range("F2:F100")   ' adjust range
