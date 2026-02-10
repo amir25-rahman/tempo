@@ -1,3 +1,28 @@
+
+If IsEmpty(cell.Value) Or Not IsNumeric(cell.Value) Or cell.Value = 0 Then
+    ' No fill for blanks, non-numeric, or 0%
+    targetCell.Interior.ColorIndex = xlNone
+Else
+    With targetCell.Interior
+        If cell.Value >= upperThreshold Then
+            .Color = RGB(0, 176, 80)      ' Green
+        ElseIf cell.Value >= lowerThreshold Then
+            .Color = RGB(255, 192, 0)     ' Yellow
+        Else
+            .Color = RGB(192, 0, 0)       ' Red
+        End If
+    End With
+End If
+
+
+
+
+
+
+
+
+
+
 ' --- PLACE THIS ENTIRE BLOCK IN THE SHEET MODULE (e.g., Sheet1) ---
 
 Private Sub Worksheet_Change(ByVal Target As Range)
