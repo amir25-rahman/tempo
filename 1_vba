@@ -1,0 +1,72 @@
+' --- PLACE THIS ENTIRE BLOCK IN THE SHEET MODULE (e.g., Sheet1) ---
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    ' Trigger when user manually edits F or H
+    If Intersect(Target, Me.Range("F2:F100, H2:H100")) Is Nothing Then Exit Sub
+    UpdateColorBands
+End Sub
+
+Private Sub Worksheet_Calculate()
+    ' Trigger when formulas recalculate (real-time updates)
+    UpdateColorBands
+End Sub
+
+Private Sub UpdateColorBands()
+    On Error GoTo CleanUp
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    
+    ' Column F -> Column E
+    ApplyIconSetLogic Me.Range("F2:F100"), "E", "E"
+    
+    ' Column H -> Column G
+    ApplyIconSetLogic Me.Range("H2:H100"), "G", "G"
+
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub ApplyIconSetLogic(sourceRng As Range, colStart As String, colEnd As String)
+    Dim cell As Range
+    Dim minVal As Double, maxVal As Double
+    Dim upperThreshold As Double, lowerThreshold As Double
+    
+    ' Get Min/Max
+    On Error Resume Next
+    minVal = Application.WorksheetFunction.Min(sourceRng)
+    maxVal = Application.WorksheetFunction.Max(sourceRng)
+    On Error GoTo 0
+    
+    ' Skip if no data
+    If minVal = 0 And maxVal = 0 Then Exit Sub
+    
+    ' 67% / 33% thresholds
+    If minVal = maxVal Then
+        upperThreshold = maxVal
+        lowerThreshold = maxVal
+    Else
+        upperThreshold = minVal + (0.67 * (maxVal - minVal))
+        lowerThreshold = minVal + (0.33 * (maxVal - minVal))
+    End If
+    
+    ' Apply colors
+    For Each cell In sourceRng
+        Dim targetCell As Range
+        Set targetCell = Me.Range(Me.Cells(cell.Row, colStart), Me.Cells(cell.Row, colEnd))
+        
+        If IsEmpty(cell.Value) Or Not IsNumeric(cell.Value) Then
+            targetCell.Interior.ColorIndex = xlNone
+        Else
+            With targetCell.Interior
+                If cell.Value >= upperThreshold Then
+                    .Color = RGB(0, 176, 80)      ' Green
+                ElseIf cell.Value >= lowerThreshold Then
+                    .Color = RGB(255, 192, 0)     ' Yellow
+                Else
+                    .Color = RGB(192, 0, 0)       ' Red
+                End If
+            End With
+        End If
+    Next cell
+End Sub
