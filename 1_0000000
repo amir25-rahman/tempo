@@ -1,3 +1,89 @@
+
+import pandas as pd
+
+# --- 1. CONFIGURATION ---
+input_file = 'your_data.xlsx' 
+output_file = 'analysis_result.xlsx'
+
+# --- 2. LOAD & NORMALIZE ---
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# Standardize column names: lowercase and replace spaces with underscores
+df_cat.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cat.columns]
+df_cal.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cal.columns]
+
+# --- 3. DYNAMIC COLUMN MAPPING ---
+# We find the column names dynamically to avoid KeyErrors
+def get_col(df, keywords):
+    for col in df.columns:
+        if any(k in col for k in keywords):
+            return col
+    return None
+
+# Mapping keys (using the names you provided)
+cat_logical = get_col(df_cat, ['logical'])
+cal_logical = get_col(df_cal, ['logical'])
+cat_path = get_col(df_cat, ['cdm', 'path'])
+cal_path = get_col(df_cal, ['cdm', 'path'])
+
+# --- 4. PREPARE & JOIN ---
+# We rename them to a guaranteed standard for the join logic
+df_cat_prep = df_cat.rename(columns={
+    cat_logical: 'logical_cat',
+    cat_path: 'path_cat'
+})
+
+df_cal_prep = df_cal.rename(columns={
+    cal_logical: 'logical_cal',
+    cal_path: 'path_cal'
+})
+
+# Full Outer Join to see both sides on the same axis
+df_merged = pd.merge(
+    df_cat_prep,
+    df_cal_prep,
+    left_on='logical_cat',
+    right_on='logical_cal',
+    how='outer'
+)
+
+# --- 5. THE STATUS LOGIC (Defensive against missing columns) ---
+def identify_status(row):
+    # Check if the keys exist in the row
+    has_cat = pd.notna(row.get('logical_cat'))
+    has_cal = pd.notna(row.get('logical_cal'))
+    
+    val_cat = str(row.get('path_cat', '')).strip()
+    val_cal = str(row.get('path_cal', '')).strip()
+
+    if has_cat and has_cal:
+        return "MATCH" if val_cat == val_cal else "PATH MISMATCH"
+    return "ONLY IN CAT" if has_cat else "ONLY IN CAL"
+
+# Apply logic safely
+df_merged['Analysis_Status'] = df_merged.apply(identify_status, axis=1)
+
+# --- 6. CLEAN UP & EXPORT ---
+# Add the manual column at the start
+df_merged.insert(0, 'NEW_MANUAL_NAME', "")
+
+# Sort by status so mismatches are at the top
+df_merged = df_merged.sort_values('Analysis_Status', ascending=False)
+
+df_merged.to_excel(output_file, index=False)
+print(f"File generated: {output_file}")
+
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 
 # --- 1. CONFIGURATION ---
