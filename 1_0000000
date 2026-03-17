@@ -1,3 +1,76 @@
+import pandas as pd
+
+# --- 1. CONFIGURATION ---
+input_file = 'your_data.xlsx' 
+output_file = 'analysis_result.xlsx'
+
+# --- 2. LOAD DATA ---
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# Clean column names (removes leading/trailing spaces and replaces middle spaces with underscores)
+df_cat.columns = [c.strip().replace(' ', '_') for c in df_cat.columns]
+df_cal.columns = [c.strip().replace(' ', '_') for c in df_cal.columns]
+
+# --- 3. PREPARE FOR JOIN ---
+# After the cleaning above, 'CDM Path' becomes 'CDM_Path'
+df_cat_prep = df_cat.rename(columns={
+    'Logical_Name': 'Logical_Name_CAT',
+    'Source_Field': 'SourceField_CAT',
+    'Field_Name': 'Field_CAT',
+    'CDM_Path': 'Path_CAT'
+})
+
+df_cal_prep = df_cal.rename(columns={
+    'Logical_Name': 'Logical_Name_CAL',
+    'Field_Name': 'Field_CAL',
+    'CDM_Path': 'Path_CAL'
+})
+
+# --- 4. THE FULL OUTER JOIN ---
+df_merged = pd.merge(
+    df_cat_prep,
+    df_cal_prep,
+    left_on='Logical_Name_CAT',
+    right_on='Logical_Name_CAL',
+    how='outer'
+)
+
+# --- 5. ANALYZE DISCREPANCIES ---
+def identify_status(row):
+    in_cat = pd.notna(row['Logical_Name_CAT'])
+    in_cal = pd.notna(row['Logical_Name_CAL'])
+    
+    if in_cat and in_cal:
+        # Check if paths match (handles potential NaN issues)
+        if str(row['Path_CAT']).strip() == str(row['Path_CAL']).strip():
+            return "MATCH"
+        else:
+            return "PATH MISMATCH"
+    elif in_cat:
+        return "ONLY IN CAT"
+    else:
+        return "ONLY IN CAL"
+
+df_merged['Analysis_Status'] = df_merged.apply(identify_status, axis=1)
+
+# --- 6. ADD MANUAL INPUT COLUMN ---
+df_merged.insert(0, 'NEW_MANUAL_NAME', "")
+
+# --- 7. EXPORT ---
+df_merged.to_excel(output_file, index=False)
+
+print(f"Success! Analysis saved to {output_file}")
+
+
+
+
+
+
+
+
+
+
 
 import pandas as pd
 
