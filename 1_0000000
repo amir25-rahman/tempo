@@ -1,3 +1,82 @@
+import pandas as pd
+
+# 1. Load the data
+file_path = 'your_data_file.xlsx'
+df_cat = pd.read_excel(file_path, sheet_name='CAT')
+df_cal = pd.read_excel(file_path, sheet_name='CAL')
+
+# 2. Check for an existing 'Overrides' file to handle the "Rerun" logic
+try:
+    overrides = pd.read_excel('manual_overrides.xlsx')
+    # Create a mapping dictionary if the user provided a New_Name
+    name_map = overrides.dropna(subset=['New_Logical_Name']).set_index('Logical_Name')['New_Logical_Name'].to_dict()
+    
+    # Apply the manual names before joining
+    df_cat['Logical_Name'] = df_cat['Logical_Name'].replace(name_map)
+    df_cal['Logical_Name'] = df_cal['Logical_Name'].replace(name_map)
+    print("Applied manual overrides from manual_overrides.xlsx")
+except FileNotFoundError:
+    print("No overrides found. Proceeding with original names.")
+
+# 3. Perform an Outer Join to see everything side-by-side
+# This handles the many-to-many relationship
+merged = pd.merge(
+    df_cat, 
+    df_cal, 
+    on='Logical_Name', 
+    how='outer', 
+    suffixes=('_CAT', '_CAL')
+)
+
+# 4. Filter for Path Mismatches
+# We define a mismatch as: Same Logical_Name, but different CDM_Paths
+# (Ignoring rows where one side is NaN/missing)
+mismatch_filter = (merged['CDM_Path_CAT'] != merged['CDM_Path_CAL']) & \
+                  (merged['CDM_Path_CAT'].notna()) & \
+                  (merged['CDM_Path_CAL'].notna())
+
+mismatches = merged[mismatch_filter].copy()
+
+# 5. Add a column for your manual input
+if 'New_Logical_Name' not in mismatches.columns:
+    mismatches['New_Logical_Name'] = ""
+
+# 6. Save the results
+mismatches.to_excel('manual_overrides.xlsx', index=False)
+print(f"Analysis complete. {len(mismatches)} discrepancies found. Review 'manual_overrides.xlsx'.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Sub SyncIconColorDE()
     Dim r As Range
     Dim currVal As Variant, prevVal As Variant
