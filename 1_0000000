@@ -1,4 +1,69 @@
 import pandas as pd
+import os
+
+# --- SETTINGS ---
+input_file = 'your_data.xlsx'
+mapping_file = 'master_mapping_tool.xlsx'
+
+# 1. Load Original Data
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# 2. Apply Overrides (The "Rerun" Logic)
+if os.path.exists(mapping_file):
+    overrides = pd.read_excel(mapping_file)
+    # Only pick rows where the user actually typed a new name
+    updates = overrides.dropna(subset=['Manual_Corrected_Name'])
+    
+    if not updates.empty:
+        # Create a mapping from BOTH original columns to the new name
+        # We handle CAT and CAL names separately in case they were different
+        cat_map = dict(zip(updates['Logical_Name_CAT'], updates['Manual_Corrected_Name']))
+        cal_map = dict(zip(updates['Logical_Name_CAL'], updates['Manual_Corrected_Name']))
+        
+        df_cat['Logical_Name'] = df_cat['Logical_Name'].replace(cat_map)
+        df_cal['Logical_Name'] = df_cal['Logical_Name'].replace(cal_map)
+        print(f"Applied {len(updates)} manual name corrections.")
+
+# 3. The "Everything" Join (Full Outer)
+# We join on Logical_Name, but keep the original names for reference in the output
+master_df = pd.merge(
+    df_cat.rename(columns={'Logical_Name': 'Logical_Name_CAT'}), 
+    df_cal.rename(columns={'Logical_Name': 'Logical_Name_CAL'}),
+    left_on='Logical_Name_CAT',
+    right_on='Logical_Name_CAL',
+    how='outer',
+    suffixes=('_CAT', '_CAL')
+)
+
+# 4. Add Helper Columns for the User
+# Indicator for mismatches to help you scan the list faster
+master_df['Status'] = 'Match'
+master_df.loc[master_df['CDM_Path_CAT'] != master_df['CDM_Path_CAL'], 'Status'] = 'Path Mismatch'
+master_df.loc[master_df['Logical_Name_CAT'].isna(), 'Status'] = 'Only in CAL'
+master_df.loc[master_df['Logical_Name_CAL'].isna(), 'Status'] = 'Only in CAT'
+
+# Empty column for your input
+if 'Manual_Corrected_Name' not in master_df.columns:
+    master_df['Manual_Corrected_Name'] = ""
+
+# 5. Export
+master_df.to_excel(mapping_file, index=False)
+print(f"Master file updated: {mapping_file}. Open it to see all relationships.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
 
 # 1. Load the data
 file_path = 'your_file.xlsx'
