@@ -1,6 +1,97 @@
 import pandas as pd
 import os
 
+# --- 1. SETUP ---
+input_file = 'your_data.xlsx'
+analysis_file = 'analysis_result.xlsx'
+
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# Normalize headers
+df_cat.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cat.columns]
+df_cal.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cal.columns]
+
+# --- 2. BUILD THE TRANSLATION TABLE ---
+if os.path.exists(analysis_file):
+    # Read the file where you typed the new names
+    analysis_df = pd.read_excel(analysis_file)
+    
+    # Filter for rows where you actually provided a new name
+    # We create a mapping: { 'Old Name': 'New Name' }
+    mapping_data = analysis_df.dropna(subset=['NEW_MANUAL_NAME'])
+    
+    # We need to collect ALL old names (from both CAT and CAL columns) 
+    # that should point to the NEW name.
+    translation_dict = {}
+    
+    for _, row in mapping_data.iterrows():
+        new_name = row['NEW_MANUAL_NAME']
+        old_cat = row.get('logical_cat')
+        old_cal = row.get('logical_cal')
+        
+        if pd.notna(old_cat):
+            translation_dict[str(old_cat)] = str(new_name)
+        if pd.notna(old_cal):
+            translation_dict[str(old_cal)] = str(new_name)
+
+    # --- 3. APPLY TRANSLATION ---
+    # This overwrites the original logical names with your manual ones
+    if translation_dict:
+        df_cat['logical_name'] = df_cat['logical_name'].astype(str).replace(translation_dict)
+        df_cal['logical_name'] = df_cal['logical_name'].astype(str).replace(translation_dict)
+        print(f"Applied renames for {len(translation_dict)} unique original names.")
+
+# --- 4. PERFORM THE JOIN ---
+# Now that 'logical_name' in both sheets has been updated to the same value, 
+# the merge will finally put them on the same row.
+df_merged = pd.merge(
+    df_cat.rename(columns={'logical_name': 'logical_cat', 'cdm_path': 'path_cat'}),
+    df_cal.rename(columns={'logical_name': 'logical_cal', 'cdm_path': 'path_cal'}),
+    left_on='logical_cat',
+    right_on='logical_cal',
+    how='outer'
+)
+
+# --- 5. STATUS LOGIC ---
+def identify_status(row):
+    has_cat = pd.notna(row.get('logical_cat')) and str(row.get('logical_cat')) != 'nan'
+    has_cal = pd.notna(row.get('logical_cal')) and str(row.get('logical_cal')) != 'nan'
+    val_cat = str(row.get('path_cat', '')).strip()
+    val_cal = str(row.get('path_cal', '')).strip()
+
+    if has_cat and has_cal:
+        return "MATCH" if val_cat == val_cal else "PATH MISMATCH"
+    return "ONLY IN CAT" if has_cat else "ONLY IN CAL"
+
+df_merged['Analysis_Status'] = df_merged.apply(identify_status, axis=1)
+
+# Ensure the NEW_MANUAL_NAME column exists for your next round of edits
+if 'NEW_MANUAL_NAME' not in df_merged.columns:
+    df_merged.insert(0, 'NEW_MANUAL_NAME', "")
+
+# --- 6. EXPORT ---
+df_merged.to_excel(analysis_file, index=False)
+print(f"Update complete. Check {analysis_file}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import os
+
 # --- 1. CONFIGURATION ---
 original_file = 'your_data.xlsx'
 analysis_file = 'analysis_result.xlsx'
