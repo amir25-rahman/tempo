@@ -1,6 +1,75 @@
 import pandas as pd
 import os
 
+# Configuration
+input_file = 'your_data.xlsx'
+mapping_file = 'mapping_template.xlsx'
+
+# 1. Load the original data
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# 2. Check if the mapping file already exists (the "Rerun" logic)
+if os.path.exists(mapping_file):
+    print(f"Found existing {mapping_file}. Applying manual mappings...")
+    mapping_df = pd.read_excel(mapping_file)
+    
+    # Create a dictionary for renaming: {Old_Name: New_Name}
+    # We drop empty 'New_Logical_Name' rows so we only rename what you've filled in
+    name_map = mapping_df.dropna(subset=['New_Logical_Name']).set_index('Source_Logical_Name')['New_Logical_Name'].to_dict()
+    
+    # Apply the mapping to both sheets BEFORE the join
+    df_cat['Logical_Name'] = df_cat['Logical_Name'].replace(name_map)
+    df_cal['Logical_Name'] = df_cal['Logical_Name'].replace(name_map)
+else:
+    print(f"No mapping file found. Generating {mapping_file} for your review...")
+
+# 3. Create a unique list of all Logical Names from both sides for the template
+all_names = pd.concat([
+    df_cat[['Logical_Name', 'CDM_Path']].assign(Source='CAT'),
+    df_cal[['Logical_Name', 'CDM_Path']].assign(Source='CAL')
+])
+
+# Group by name so you can see if one name has multiple paths across sheets
+template = all_names.groupby(['Logical_Name', 'Source']).agg({'CDM_Path': 'unique'}).reset_index()
+template.rename(columns={'Logical_Name': 'Source_Logical_Name'}, inplace=True)
+
+# Add a blank column for you to type the new name
+if 'New_Logical_Name' not in template.columns:
+    template['New_Logical_Name'] = ""
+
+# 4. Perform the Full Outer Join (The "Same Axis" View)
+# This shows you CAT and CAL data side-by-side
+final_view = pd.merge(
+    df_cat, 
+    df_cal, 
+    on='Logical_Name', 
+    how='outer', 
+    suffixes=('_CAT', '_CAL')
+)
+
+# 5. Save everything to one Excel with two sheets
+with pd.ExcelWriter(mapping_file) as writer:
+    template.to_excel(writer, sheet_name='Rename_Tool', index=False)
+    final_view.to_excel(writer, sheet_name='Current_Join_Result', index=False)
+
+print("Done! Open 'mapping_template.xlsx'.")
+
+
+
+
+
+
+
+
+
+
+
+m
+
+import pandas as pd
+import os
+
 # --- SETTINGS ---
 input_file = 'your_data.xlsx'
 mapping_file = 'master_mapping_tool.xlsx'
