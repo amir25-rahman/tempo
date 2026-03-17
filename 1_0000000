@@ -1,6 +1,50 @@
 import pandas as pd
 
 # 1. Load the data
+file_path = 'your_file.xlsx'
+df_cat = pd.read_excel(file_path, sheet_name='CAT')
+df_cal = pd.read_excel(file_path, sheet_name='CAL')
+
+# 2. Merge on Logical_Name to find matches
+# We use an inner join to only look at names present in both sheets
+merged = pd.merge(
+    df_cat, 
+    df_cal, 
+    on='Logical_Name', 
+    suffixes=('_CAT', '_CAL')
+)
+
+# 3. Identify where Logical Name is the same but CDM_Path is different
+mismatches = merged[merged['CDM_Path_CAT'] != merged['CDM_Path_CAL']].copy()
+
+# 4. Add a column for manual input (if it doesn't exist)
+if 'New_Logical_Name' not in mismatches.columns:
+    mismatches['New_Logical_Name'] = ""
+
+# 5. Export mismatches for manual review
+mismatches.to_excel('path_mismatches.xlsx', index=False)
+
+print(f"Found {len(mismatches)} path discrepancies. Review 'path_mismatches.xlsx'.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+
+# 1. Load the data
 file_path = 'your_data_file.xlsx'
 df_cat = pd.read_excel(file_path, sheet_name='CAT')
 df_cal = pd.read_excel(file_path, sheet_name='CAL')
