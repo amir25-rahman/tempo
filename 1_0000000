@@ -1,3 +1,53 @@
+
+import pandas as pd
+import os
+
+# --- 1. SETUP ---
+input_file = 'your_data.xlsx'  # Change this to your actual filename
+output_file = 'reconciliation_analysis.xlsx'
+
+# Load CAT and CAL sheets
+df_cat = pd.read_excel(input_file, sheet_name='CAT')
+df_cal = pd.read_excel(input_file, sheet_name='CAL')
+
+# --- 2. THE "EVERYTHING" JOIN (FULL OUTER) ---
+# We join on Logical_Name to see them side-by-side. 
+# We keep the original Logical_Names as separate columns so you can see the gaps.
+analysis_df = pd.merge(
+    df_cat.rename(columns={'Logical_Name': 'Logical_Name_CAT', 'Field_Name': 'Field_CAT', 'CDM_Path': 'Path_CAT'}),
+    df_cal.rename(columns={'Logical_Name': 'Logical_Name_CAL', 'Field_Name': 'Field_CAL', 'CDM_Path': 'Path_CAL'}),
+    left_on='Logical_Name_CAT',
+    right_on='Logical_Name_CAL',
+    how='outer'
+)
+
+# --- 3. STATUS LOGIC ---
+# This helps you filter the Excel file quickly
+def check_status(row):
+    if pd.isna(row['Logical_Name_CAT']): return 'Only in CAL'
+    if pd.isna(row['Logical_Name_CAL']): return 'Only in CAT'
+    if row['Path_CAT'] != row['Path_CAL']: return 'Path Mismatch'
+    return 'Perfect Match'
+
+analysis_df['Match_Status'] = analysis_df.apply(check_status, axis=1)
+
+# --- 4. ADD MANUAL INPUT COLUMN ---
+# This is placed at the start so it's easy to find
+analysis_df.insert(0, 'New_Logical_Name', "")
+
+# --- 5. EXPORT ---
+analysis_df.to_excel(output_file, index=False)
+
+print(f"Analysis complete! Open '{output_file}' to see both sheets on the same axis.")
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import os
 
