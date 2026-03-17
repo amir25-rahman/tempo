@@ -1,3 +1,81 @@
+import pandas as pd
+import os
+
+# --- 1. CONFIGURATION ---
+original_file = 'your_data.xlsx'
+analysis_file = 'analysis_result.xlsx'
+output_file = 'analysis_result_UPDATED.xlsx'
+
+# --- 2. LOAD ORIGINAL DATA ---
+df_cat = pd.read_excel(original_file, sheet_name='CAT')
+df_cal = pd.read_excel(original_file, sheet_name='CAL')
+
+# Clean headers to match Phase 1
+df_cat.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cat.columns]
+df_cal.columns = [str(c).strip().lower().replace(' ', '_') for c in df_cal.columns]
+
+# --- 3. READ MANUAL OVERRIDES ---
+if os.path.exists(analysis_file):
+    overrides = pd.read_excel(analysis_file)
+    
+    # Filter for rows where you actually typed a new name
+    mapping = overrides.dropna(subset=['NEW_MANUAL_NAME'])
+    
+    if not mapping.empty:
+        # Create mapping dictionaries for CAT and CAL names
+        # We map the OLD names found in the analysis back to the NEW name
+        cat_map = mapping.dropna(subset=['logical_cat']).set_index('logical_cat')['NEW_MANUAL_NAME'].to_dict()
+        cal_map = mapping.dropna(subset=['logical_cal']).set_index('logical_cal')['NEW_MANUAL_NAME'].to_dict()
+
+        # Update the original DataFrames with your new names
+        df_cat['logical_name'] = df_cat['logical_name'].replace(cat_map)
+        df_cal['logical_name'] = df_cal['logical_name'].replace(cal_map)
+        
+        print(f"Applied {len(cat_map) + len(cal_map)} manual renames.")
+
+# --- 4. RERUN THE RECONCILIATION ---
+# Now that names match, 'outer' join will align them on the same row
+df_merged = pd.merge(
+    df_cat.rename(columns={'logical_name': 'logical_cat', 'cdm_path': 'path_cat'}),
+    df_cal.rename(columns={'logical_name': 'logical_cal', 'cdm_path': 'path_cal'}),
+    left_on='logical_cat',
+    right_on='logical_cal',
+    how='outer'
+)
+
+# --- 5. RE-CALCULATE STATUS ---
+def identify_status(row):
+    has_cat = pd.notna(row.get('logical_cat'))
+    has_cal = pd.notna(row.get('logical_cal'))
+    val_cat = str(row.get('path_cat', '')).strip()
+    val_cal = str(row.get('path_cal', '')).strip()
+
+    if has_cat and has_cal:
+        return "MATCH" if val_cat == val_cal else "PATH MISMATCH"
+    return "ONLY IN CAT" if has_cat else "ONLY IN CAL"
+
+df_merged['Analysis_Status'] = df_merged.apply(identify_status, axis=1)
+
+# Carry over the manual names so you can see them in the new report
+df_merged.insert(0, 'NEW_MANUAL_NAME', "") 
+
+# --- 6. EXPORT ---
+df_merged.to_excel(output_file, index=False)
+print(f"Rerun complete! New results in: {output_file}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import pandas as pd
 
