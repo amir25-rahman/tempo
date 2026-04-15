@@ -1,3 +1,18 @@
+with open('file.csv', 'w') as f:
+    f.write('||'.join(df.columns) + '\n')
+    for _, row in df.iterrows():
+        f.write('||'.join(row.astype(str)) + '\n')
+
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import os
 
