@@ -1,3 +1,28 @@
+import pandas as pd
+
+df = pd.DataFrame({
+    'Name': ['Alice', 'Bob'],
+    'Age': [30, 25],
+    'City': ['New York', 'London']
+})
+
+with open('output.csv', 'w') as f:
+    f.write('||'.join(df.columns) + '\n')
+    for _, row in df.iterrows():
+        f.write('||'.join(row.astype(str)) + '\n')
+
+
+
+
+
+
+
+
+
+
+
+
+
 with open('file.csv', 'w') as f:
     f.write('||'.join(df.columns) + '\n')
     for _, row in df.iterrows():
