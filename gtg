@@ -1,0 +1,1023 @@
+import json
+import os
+import webbrowser
+import sqlglot
+from sqlglot import exp
+
+def generate_isolated_dremio_lineage(sql_query: str, output_filename: str = "dremio_lineage_isolated_app.html"):
+    """
+    Generates an enterprise-scale Dremio SQL Lineage & Transformation app featuring:
+    - Target Node Locking (Pin & Trace strict ancestry without sibling clutter)
+    - Reliable Collapsible Bottom Table for full-screen graph inspection
+    - Dynamic Dagre Re-Layout on subgraph isolation (no empty gaps)
+    - Parent Table/Stage visual container highlighting on cell/node selection
+    """
+    parsed = sqlglot.parse_one(sql_query, read="trino")
+    
+    nodes = {}
+    edges = {}
+    table_rows = []
+    
+    cte_dict = {cte.alias_or_name: cte for cte in parsed.find_all(exp.CTE)}
+    cte_names = set(cte_dict.keys())
+
+    def get_scope_alias_map(subquery):
+        """Maps table aliases (e.g., 'c', 'r') to their true table/CTE names within a scope."""
+        alias_map = {}
+        for table in subquery.find_all(exp.Table):
+            real_name = table.name
+            alias = table.alias or real_name
+            alias_map[alias] = real_name
+        return alias_map
+
+    def resolve_table_ref(col_ref, alias_map):
+        """Resolves a column's parent table using the scope's alias mapping."""
+        if col_ref.table:
+            return alias_map.get(col_ref.table, col_ref.table)
+        if len(alias_map) == 1:
+            return next(iter(alias_map.values()))
+        return "UNKNOWN_SOURCE"
+
+    def add_table_and_column(table_name, col_name, stage_type="source", formula=None, filter_str=None, inputs=None):
+        if table_name not in nodes:
+            nodes[table_name] = {
+                "data": {
+                    "id": table_name,
+                    "label": f"{table_name.upper()} ({stage_type.upper()})",
+                    "type": "container",
+                    "stage": stage_type
+                }
+            }
+            
+        col_id = f"{table_name}.{col_name}"
+        if col_id not in nodes:
+            is_transformed = bool(formula)
+            display_label = f"{col_name} [fx]" if is_transformed else col_name
+            
+            nodes[col_id] = {
+                "data": {
+                    "id": col_id,
+                    "parent": table_name,
+                    "label": display_label,
+                    "raw_name": col_name,
+                    "formula": formula or "Direct Column Mapping",
+                    "filter": filter_str or "None",
+                    "table": table_name,
+                    "stage": stage_type,
+                    "is_transformed": is_transformed,
+                    "source_inputs": inputs or [col_name]
+                }
+            }
+            
+            table_rows.append({
+                "id": col_id,
+                "target_col": col_name,
+                "parent_table": table_name,
+                "stage": stage_type.upper(),
+                "source_inputs": inputs or [col_name],
+                "formula": formula or "Direct Mapping",
+                "filter_scope": filter_str or "None",
+                "is_transformed": is_transformed
+            })
+            
+        return col_id
+
+    def add_edge(source_id, target_id, edge_type, label=""):
+        edge_id = f"{edge_type}:{source_id}->{target_id}"
+        if edge_id not in edges:
+            edges[edge_id] = {
+                "data": {
+                    "id": edge_id,
+                    "source": source_id,
+                    "target": target_id,
+                    "type": edge_type,
+                    "label": label
+                }
+            }
+
+    # 1. Process CTE Transformations
+    for cte_name, cte in cte_dict.items():
+        subquery = cte.this
+        if not isinstance(subquery, exp.Select):
+            continue
+            
+        alias_map = get_scope_alias_map(subquery)
+        where_clause = subquery.args.get("where")
+        filter_str = where_clause.this.sql() if where_clause else None
+
+        # Capture column transformations
+        for expression in subquery.selects:
+            col_alias = expression.alias_or_name
+            raw_sql = expression.sql()
+            is_calc = (col_alias != raw_sql) and any(token in raw_sql for token in ("(", "+", "-", "*", "/", "||"))
+            source_cols = [c.name for c in expression.find_all(exp.Column)]
+            
+            target_id = add_table_and_column(
+                table_name=cte_name, 
+                col_name=col_alias, 
+                stage_type="cte", 
+                formula=raw_sql if is_calc else None, 
+                filter_str=filter_str,
+                inputs=source_cols
+            )
+            
+            for col_ref in expression.find_all(exp.Column):
+                real_table = resolve_table_ref(col_ref, alias_map)
+                src_id = add_table_and_column(
+                    table_name=real_table,
+                    col_name=col_ref.name,
+                    stage_type="cte" if real_table in cte_names else "source"
+                )
+                
+                edge_type = "transformation" if is_calc else "direct"
+                add_edge(src_id, target_id, edge_type, "fx" if is_calc else "")
+
+        # Capture Join relational conditions
+        for join in subquery.find_all(exp.Join):
+            on_clause = join.args.get("on")
+            if on_clause:
+                cols = list(on_clause.find_all(exp.Column))
+                if len(cols) >= 2:
+                    t1 = resolve_table_ref(cols[0], alias_map)
+                    t2 = resolve_table_ref(cols[1], alias_map)
+                    n1 = add_table_and_column(t1, cols[0].name, "cte" if t1 in cte_names else "source")
+                    n2 = add_table_and_column(t2, cols[1].name, "cte" if t2 in cte_names else "source")
+                    add_edge(n1, n2, "join", "JOIN ON")
+
+    # 2. Process Final Output SELECT
+    if isinstance(parsed, exp.Select):
+        alias_map = get_scope_alias_map(parsed)
+        where_clause = parsed.args.get("where")
+        filter_str = where_clause.this.sql() if where_clause else None
+
+        for expression in parsed.selects:
+            out_col = expression.alias_or_name
+            raw_sql = expression.sql()
+            is_calc = (out_col != raw_sql) and any(token in raw_sql for token in ("(", "+", "-", "*", "/", "||"))
+            source_cols = [c.name for c in expression.find_all(exp.Column)]
+            
+            target_id = add_table_and_column(
+                table_name="FINAL_OUTPUT",
+                col_name=out_col,
+                stage_type="output",
+                formula=raw_sql if is_calc else None,
+                filter_str=filter_str,
+                inputs=source_cols
+            )
+            
+            for col_ref in expression.find_all(exp.Column):
+                real_table = resolve_table_ref(col_ref, alias_map)
+                src_id = add_table_and_column(
+                    table_name=real_table,
+                    col_name=col_ref.name,
+                    stage_type="cte" if real_table in cte_names else "source"
+                )
+                
+                edge_type = "transformation" if is_calc else "direct"
+                add_edge(src_id, target_id, edge_type, "fx" if is_calc else "")
+
+        # Capture Top-Level Joins
+        for join in parsed.find_all(exp.Join):
+            on_clause = join.args.get("on")
+            if on_clause:
+                cols = list(on_clause.find_all(exp.Column))
+                if len(cols) >= 2:
+                    t1 = resolve_table_ref(cols[0], alias_map)
+                    t2 = resolve_table_ref(cols[1], alias_map)
+                    n1 = add_table_and_column(t1, cols[0].name, "cte" if t1 in cte_names else "source")
+                    n2 = add_table_and_column(t2, cols[1].name, "cte" if t2 in cte_names else "source")
+                    add_edge(n1, n2, "join", "JOIN ON")
+
+    graph_elements = {
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values())
+    }
+
+    # 3. HTML + Cytoscape.js + Interactive Lineage App Template
+    html_template = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Dremio SQL Lineage & Transformation Explorer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #F8FAFC;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            color: #0F172A;
+        }}
+        header {{
+            background: #FFFFFF;
+            border-bottom: 1px solid #E2E8F0;
+            padding: 10px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            z-index: 10;
+            height: 50px;
+        }}
+        h1 {{ font-size: 16px; font-weight: 700; margin: 0; color: #1E293B; }}
+        .legend {{ display: flex; gap: 16px; font-size: 12px; align-items: center; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; }}
+        .line-direct {{ width: 20px; height: 2px; background: #64748B; }}
+        .line-transform {{ width: 20px; height: 3px; background: #2563EB; border-radius: 2px; }}
+        .line-join {{ width: 20px; border-top: 2px dashed #9333EA; }}
+        .controls {{ display: flex; align-items: center; gap: 10px; }}
+        .controls input[type="text"] {{
+            padding: 6px 10px;
+            border: 1px solid #CBD5E1;
+            border-radius: 6px;
+            font-size: 12px;
+            width: 200px;
+        }}
+        .controls label {{ font-size: 12px; font-weight: 500; color: #1E293B; cursor: pointer; }}
+        .controls button {{
+            background: #2563EB; color: white; border: none;
+            padding: 6px 12px; border-radius: 6px; font-weight: 500;
+            cursor: pointer; font-size: 12px;
+            transition: background 0.15s;
+        }}
+        .controls button:hover {{ background: #1D4ED8; }}
+        .controls button.secondary {{ background: #64748B; }}
+        .controls button.secondary:hover {{ background: #475569; }}
+        .controls button.toggle-btn {{ background: #0F172A; }}
+        
+        #app-container {{
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            height: calc(100vh - 50px);
+            overflow: hidden;
+            position: relative;
+        }}
+        #cy {{
+            height: 55%;
+            width: 100%;
+            background: #F8FAFC;
+            border-bottom: 2px solid #E2E8F0;
+            transition: height 0.25s ease;
+        }}
+        #cy.full-screen {{
+            height: 100% !important;
+            border-bottom: none;
+        }}
+        #bottom-panel {{
+            height: 45%;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            background: #FFFFFF;
+            overflow: hidden;
+            transition: height 0.25s ease;
+        }}
+        #bottom-panel.collapsed {{
+            height: 0% !important;
+            display: none !important;
+        }}
+        #inspector-bar {{
+            background: #F1F5F9;
+            border-bottom: 1px solid #E2E8F0;
+            padding: 10px 24px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }}
+        .insp-left {{ display: flex; gap: 20px; align-items: center; overflow-x: auto; }}
+        .inspector-item {{ display: flex; align-items: center; gap: 6px; white-space: nowrap; }}
+        .inspector-label {{ font-weight: 700; color: #475569; text-transform: uppercase; font-size: 11px; }}
+        #lock-btn {{
+            background: #D97706;
+            color: white;
+            border: none;
+            padding: 5px 12px;
+            border-radius: 5px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            display: none;
+        }}
+        #lock-btn.locked {{
+            background: #DC2626;
+        }}
+        #table-container {{
+            flex: 1;
+            overflow-y: auto;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }}
+        th {{
+            text-align: left;
+            padding: 10px 16px;
+            background: #F8FAFC;
+            color: #475569;
+            font-weight: 600;
+            border-bottom: 1px solid #CBD5E1;
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }}
+        td {{
+            padding: 10px 16px;
+            border-bottom: 1px solid #F1F5F9;
+            vertical-align: middle;
+        }}
+        tr {{ cursor: pointer; transition: background-color 0.15s ease; }}
+        tr:hover {{ background-color: #F8FAFC; }}
+        tr.active-row {{
+            background-color: #EFF6FF !important;
+            border-left: 4px solid #2563EB;
+        }}
+        tr.hidden-row {{ display: none !important; }}
+        .badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+        }}
+        .badge-source {{ background: #ECFDF5; color: #065F46; border: 1px solid #10B981; }}
+        .badge-cte {{ background: #EFF6FF; color: #1E40AF; border: 1px solid #3B82F6; }}
+        .badge-output {{ background: #FFFBEB; color: #92400E; border: 1px solid #F59E0B; }}
+        code {{
+            font-family: 'Fira Code', monospace;
+            background: #E2E8F0;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #0F172A;
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Dremio SQL Lineage & Transformation Explorer</h1>
+        <div class="legend">
+            <div class="legend-item"><div class="line-direct"></div> Direct Flow</div>
+            <div class="legend-item"><div class="line-transform"></div> Transformation [fx]</div>
+            <div class="legend-item"><div class="line-join"></div> Join Condition</div>
+        </div>
+        <div class="controls">
+            <input type="text" id="search-input" placeholder="Search column or formula..." onkeyup="filterTable()">
+            <label><input type="checkbox" id="isolate-toggle" checked> Auto-Isolate Path</label>
+            <button onclick="cyFitSmooth()">Fit View</button>
+            <button class="secondary" onclick="resetHighlight()">Reset / Show All</button>
+            <button class="toggle-btn" id="table-toggle-btn" onclick="toggleBottomPanel()">Hide Table</button>
+        </div>
+    </header>
+    
+    <div id="app-container">
+        <div id="cy"></div>
+        <div id="bottom-panel">
+            <div id="inspector-bar">
+                <div class="insp-left">
+                    <div class="inspector-item"><span class="inspector-label">Selected:</span> <span id="insp-col">None</span></div>
+                    <div class="inspector-item"><span class="inspector-label">Table:</span> <span id="insp-tbl">--</span></div>
+                    <div class="inspector-item"><span class="inspector-label">Inputs:</span> <code id="insp-inputs">--</code></div>
+                    <div class="inspector-item"><span class="inspector-label">Formula:</span> <code id="insp-fx">--</code></div>
+                    <div class="inspector-item"><span class="inspector-label">Filter Scope:</span> <code id="insp-filter">--</code></div>
+                </div>
+                <div>
+                    <button id="lock-btn" onclick="toggleLockNode()">Lock Target (Pin)</button>
+                </div>
+            </div>
+            <div id="table-container">
+                <table id="transformation-table">
+                    <thead>
+                        <tr>
+                            <th>Target Column</th>
+                            <th>Parent Table / Stage</th>
+                            <th>Source Input(s)</th>
+                            <th>Transformation Logic / Formula</th>
+                            <th>Filter / Join Scope</th>
+                        </tr>
+                    </thead>
+                    <tbody id="table-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const elements = {json.dumps(graph_elements)};
+        const tableData = {json.dumps(table_rows)};
+        let activeNodeId = null;
+        let lockedNodeId = null;
+
+        const dagreLayoutConfig = {{
+            name: 'dagre',
+            rankDir: 'LR',
+            rankSep: 100,
+            nodeSep: 16,
+            padding: 40,
+            animate: true,
+            animationDuration: 350,
+            fit: true
+        }};
+
+        function runCompactLayout() {{
+            const visibleElements = cy.elements().not('.hidden-node');
+            const layout = visibleElements.layout(dagreLayoutConfig);
+            layout.run();
+        }}
+
+        const tbody = document.getElementById("table-body");
+        tableData.forEach(row => {{
+            const tr = document.createElement("tr");
+            tr.id = "row-" + row.id;
+            tr.onclick = () => activateLineagePath(row.id);
+            
+            const badgeClass = row.stage === "SOURCE" ? "badge-source" :
+                               row.stage === "CTE" ? "badge-cte" : "badge-output";
+            
+            tr.innerHTML = `
+                <td><b>${{row.target_col}}</b></td>
+                <td><span class="badge ${{badgeClass}}">${{row.parent_table}} (${{row.stage}})</span></td>
+                <td><code>${{row.source_inputs.join(", ")}}</code></td>
+                <td><code>${{row.formula}}</code></td>
+                <td><code>${{row.filter_scope}}</code></td>
+            `;
+            tbody.appendChild(tr);
+        }});
+
+        const cy = cytoscape({{
+            container: document.getElementById('cy'),
+            elements: elements,
+            maxZoom: 1.8,
+            minZoom: 0.2,
+            style: [
+                {{
+                    selector: 'node[type="container"]',
+                    style: {{
+                        'label': 'data(label)',
+                        'text-valign': 'top',
+                        'text-halign': 'center',
+                        'font-size': '12px',
+                        'font-weight': 'bold',
+                        'color': '#475569',
+                        'background-color': '#F8FAFC',
+                        'border-width': 1,
+                        'border-color': '#CBD5E1',
+                        'padding': '16px',
+                        'shape': 'roundrectangle'
+                    }}
+                }},
+                {{
+                    selector: 'node[type="container"].highlighted-parent',
+                    style: {{
+                        'border-width': 3,
+                        'border-color': '#2563EB',
+                        'background-color': '#DBEAFE',
+                        'box-shadow': '0 0 15px rgba(37,99,235,0.4)'
+                    }}
+                }},
+                {{
+                    selector: 'node[parent]',
+                    style: {{
+                        'label': 'data(label)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'font-size': '11px',
+                        'font-family': 'monospace',
+                        'width': '160px',
+                        'height': '32px',
+                        'background-color': '#FFFFFF',
+                        'border-width': 1,
+                        'border-color': '#94A3B8',
+                        'shape': 'roundrectangle',
+                        'color': '#0F172A'
+                    }}
+                }},
+                {{
+                    selector: 'node[stage="source"][parent]',
+                    style: {{ 'border-color': '#10B981', 'background-color': '#ECFDF5' }}
+                }},
+                {{
+                    selector: 'node[stage="cte"][parent]',
+                    style: {{ 'border-color': '#3B82F6', 'background-color': '#EFF6FF' }}
+                }},
+                {{
+                    selector: 'node[stage="output"][parent]',
+                    style: {{ 'border-color': '#F59E0B', 'background-color': '#FFFBEB', 'font-weight': 'bold' }}
+                }},
+                {{
+                    selector: 'edge[type="direct"]',
+                    style: {{
+                        'width': 1.8,
+                        'line-color': '#64748B',
+                        'target-arrow-color': '#64748B',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier'
+                    }}
+                }},
+                {{
+                    selector: 'edge[type="transformation"]',
+                    style: {{
+                        'width': 2.5,
+                        'line-color': '#2563EB',
+                        'target-arrow-color': '#2563EB',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'label': 'data(label)',
+                        'font-size': '9px',
+                        'font-weight': 'bold',
+                        'color': '#1E40AF',
+                        'text-background-color': '#DBEAFE',
+                        'text-background-opacity': 1,
+                        'text-background-padding': '2px',
+                        'text-background-shape': 'roundrectangle'
+                    }}
+                }},
+                {{
+                    selector: 'edge[type="join"]',
+                    style: {{
+                        'width': 1.5,
+                        'line-color': '#9333EA',
+                        'line-style': 'dashed',
+                        'curve-style': 'bezier',
+                        'label': 'data(label)',
+                        'font-size': '9px',
+                        'color': '#6B21A8',
+                        'text-background-color': '#FAF5FF',
+                        'text-background-opacity': 1,
+                        'text-background-padding': '2px'
+                    }}
+                }},
+                {{ selector: '.dimmed', style: {{ 'opacity': 0.15 }} }},
+                {{ selector: '.hidden-node', style: {{ 'display': 'none' }} }},
+                {{
+                    selector: '.highlighted',
+                    style: {{
+                        'border-width': 2.5,
+                        'border-color': '#2563EB',
+                        'box-shadow': '0 0 10px rgba(37,99,235,0.3)'
+                    }}
+                }},
+                {{
+                    selector: '.locked-target',
+                    style: {{
+                        'border-width': 3,
+                        'border-color': '#D97706',
+                        'background-color': '#FEF3C7',
+                        'box-shadow': '0 0 14px rgba(217,119,6,0.6)'
+                    }}
+                }}
+            ],
+            layout: dagreLayoutConfig
+        }});
+
+        function toggleBottomPanel() {{
+            const cyEl = document.getElementById("cy");
+            const panel = document.getElementById("bottom-panel");
+            const btn = document.getElementById("table-toggle-btn");
+            
+            const isCollapsed = panel.classList.toggle("collapsed");
+            cyEl.classList.toggle("full-screen", isCollapsed);
+            btn.innerText = isCollapsed ? "Show Table" : "Hide Table";
+            
+            setTimeout(() => {{
+                cy.resize();
+                cyFitSmooth();
+            }}, 160);
+        }}
+
+        function cyFitSmooth() {{
+            cy.animate({{
+                fit: {{ els: cy.elements().not('.hidden-node'), padding: 40 }},
+                maxZoom: 1.2,
+                duration: 350
+            }});
+        }}
+
+        function updateInspector(nodeData) {{
+            const lockBtn = document.getElementById("lock-btn");
+            if (!nodeData || !nodeData.parent) {{
+                document.getElementById("insp-col").innerText = "None";
+                document.getElementById("insp-tbl").innerText = "--";
+                document.getElementById("insp-inputs").innerText = "--";
+                document.getElementById("insp-fx").innerText = "--";
+                document.getElementById("insp-filter").innerText = "--";
+                lockBtn.style.display = "none";
+                return;
+            }}
+            
+            document.getElementById("insp-col").innerText = nodeData.raw_name;
+            document.getElementById("insp-tbl").innerText = `${{nodeData.table}} (${{nodeData.stage.toUpperCase()}})`;
+            document.getElementById("insp-inputs").innerText = (nodeData.source_inputs || [nodeData.raw_name]).join(", ");
+            document.getElementById("insp-fx").innerText = nodeData.formula || "Direct Mapping";
+            document.getElementById("insp-filter").innerText = nodeData.filter || "None";
+            
+            lockBtn.style.display = "inline-block";
+            if (lockedNodeId === nodeData.id) {{
+                lockBtn.innerText = "Unlock Target";
+                lockBtn.classList.add("locked");
+            }} else {{
+                lockBtn.innerText = "Lock Target (Pin)";
+                lockBtn.classList.remove("locked");
+            }}
+        }}
+
+        function toggleLockNode() {{
+            if (!activeNodeId) return;
+            if (lockedNodeId === activeNodeId) {{
+                lockedNodeId = null;
+            }} else {{
+                lockedNodeId = activeNodeId;
+            }}
+            activateLineagePath(activeNodeId, false);
+        }}
+
+        function resetHighlight() {{
+            lockedNodeId = null;
+            activeNodeId = null;
+            cy.elements().removeClass('dimmed highlighted hidden-node locked-target highlighted-parent');
+            document.querySelectorAll("tr").forEach(tr => {{
+                tr.classList.remove("active-row", "hidden-row");
+            }});
+            document.getElementById("search-input").value = "";
+            updateInspector(null);
+            
+            cy.layout(dagreLayoutConfig).run();
+        }}
+
+        function filterTable() {{
+            const query = document.getElementById("search-input").value.toLowerCase();
+            document.querySelectorAll("#table-body tr").forEach(tr => {{
+                const text = tr.innerText.toLowerCase();
+                tr.style.display = text.includes(query) ? "" : "none";
+            }});
+        }}
+
+        function activateLineagePath(nodeId, panToNode = true) {{
+            const node = cy.getElementById(nodeId);
+            if (!node || node.empty() || !node.data('parent')) return;
+            
+            activeNodeId = nodeId;
+            updateInspector(node.data());
+            
+            let activeElements;
+            if (lockedNodeId && lockedNodeId !== nodeId) {{
+                const lockedNode = cy.getElementById(lockedNodeId);
+                const ancestorsOfLocked = lockedNode.add(lockedNode.predecessors());
+                const activeTree = node.add(node.predecessors()).add(node.successors());
+                activeElements = activeTree.intersection(ancestorsOfLocked);
+                activeElements = activeElements.add(lockedNode).add(node);
+            }} else {{
+                activeElements = node.add(node.predecessors()).add(node.successors());
+            }}
+
+            const activeParents = activeElements.nodes().map(n => n.parent());
+            const keepVisible = activeElements.add(activeParents);
+            const isolateMode = document.getElementById("isolate-toggle").checked;
+            
+            cy.elements().removeClass('dimmed highlighted hidden-node locked-target highlighted-parent');
+            
+            // HIGHLIGHT PARENT CONTAINER TABLE/STAGE
+            const parentTableNode = node.parent();
+            if (parentTableNode && !parentTableNode.empty()) {{
+                parentTableNode.addClass('highlighted-parent');
+            }}
+
+            if (lockedNodeId) {{
+                cy.getElementById(lockedNodeId).addClass('locked-target');
+            }}
+
+            if (isolateMode) {{
+                cy.elements().not(keepVisible).addClass('hidden-node');
+                activeElements.addClass('highlighted');
+                
+                runCompactLayout();
+            }} else {{
+                cy.elements().not(activeElements).addClass('dimmed');
+                activeElements.addClass('highlighted');
+                if (panToNode) {{
+                    cyFitSmooth();
+                }}
+            }}
+
+            const activeIds = new Set(activeElements.map(el => el.id()));
+            document.querySelectorAll("#table-body tr").forEach(tr => {{
+                tr.classList.remove("active-row");
+                const rowNodeId = tr.id.replace("row-", "");
+                if (isolateMode) {{
+                    tr.classList.toggle("hidden-row", !activeIds.has(rowNodeId));
+                }} else {{
+                    tr.classList.remove("hidden-row");
+                }}
+            }});
+            
+            const selectedRow = document.getElementById("row-" + nodeId);
+            if (selectedRow) {{
+                selectedRow.classList.add("active-row");
+                selectedRow.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
+            }}
+        }}
+
+        cy.on('tap', 'node[parent]', function(evt) {{
+            activateLineagePath(evt.target.id(), false);
+        }});
+
+        cy.on('tap', function(evt) {{
+            if (evt.target === cy) {{
+                resetHighlight();
+            }}
+        }});
+
+        cy.ready(() => {{ cyFitSmooth(); }});
+    </script>
+</body>
+</html>"""
+
+    with open(output_filename, "w", encoding="utf-8") as f:
+        f.write(html_template)
+        
+    print(f"Isolated lineage table app generated! Opening '{output_filename}' in browser...")
+    webbrowser.open("file://" + os.path.abspath(output_filename))
+
+
+if __name__ == "__main__":
+    sample_dremio_sql = """
+WITH
+
+-- Step 1: Filter and enrich raw orders within the reporting window
+filtered_orders AS (
+    SELECT
+        o.order_id,
+        o.customer_id,
+        o.order_date,
+        o.status,
+        o.channel,
+        o.promotion_id,
+        o.shipping_address_id,
+        DATE_TRUNC('month', o.order_date) AS order_month
+    FROM
+        sales.orders o
+    WHERE
+        o.order_date >= '2024-01-01'
+        AND o.order_date < '2025-01-01'
+        AND o.status NOT IN ('CANCELLED', 'FRAUD')
+),
+
+-- Step 2: Aggregate order line items to order level
+order_totals AS (
+    SELECT
+        oi.order_id,
+        COUNT(oi.line_item_id)                          AS line_item_count,
+        SUM(oi.quantity)                                AS total_units,
+        SUM(oi.unit_price * oi.quantity)                AS gross_revenue,
+        SUM(oi.discount_amount)                         AS total_discounts,
+        SUM((oi.unit_price * oi.quantity) - oi.discount_amount) AS net_revenue
+    FROM
+        sales.order_items oi
+    INNER JOIN
+        filtered_orders fo ON fo.order_id = oi.order_id
+    GROUP BY
+        oi.order_id
+),
+
+-- Step 3: Pull customer demographic and segment data
+customer_profile AS (
+    SELECT
+        c.customer_id,
+        c.first_name,
+        c.last_name,
+        c.email,
+        c.acquisition_channel,
+        c.signup_date,
+        cs.segment_name,
+        cs.lifetime_value_tier,
+        cs.churn_risk_score
+    FROM
+        customers.accounts c
+    LEFT JOIN
+        customers.segments cs ON cs.customer_id = c.customer_id
+),
+
+-- Step 4: Resolve promotion details and compute discount rates
+promotion_summary AS (
+    SELECT
+        p.promotion_id,
+        p.promotion_name,
+        p.promotion_type,
+        p.discount_rate,
+        p.start_date,
+        p.end_date,
+        p.budget_allocated,
+        SUM(ot.total_discounts) AS total_discount_redeemed,
+        COUNT(DISTINCT fo.order_id) AS orders_using_promo
+    FROM
+        marketing.promotions p
+    LEFT JOIN
+        filtered_orders fo ON fo.promotion_id = p.promotion_id
+    LEFT JOIN
+        order_totals ot ON ot.order_id = fo.order_id
+    GROUP BY
+        p.promotion_id,
+        p.promotion_name,
+        p.promotion_type,
+        p.discount_rate,
+        p.start_date,
+        p.end_date,
+        p.budget_allocated
+),
+
+-- Step 5: Join product details with category hierarchy for each line item
+product_detail AS (
+    SELECT
+        oi.order_id,
+        oi.line_item_id,
+        oi.product_id,
+        pr.product_name,
+        pr.sku,
+        pr.cost_price,
+        pc.category_id,
+        pc.category_name,
+        pc.parent_category_name,
+        oi.unit_price,
+        oi.quantity,
+        (oi.unit_price - pr.cost_price) * oi.quantity AS gross_margin
+    FROM
+        sales.order_items oi
+    INNER JOIN
+        filtered_orders fo ON fo.order_id = oi.order_id
+    INNER JOIN
+        catalog.products pr ON pr.product_id = oi.product_id
+    INNER JOIN
+        catalog.product_categories pc ON pc.category_id = pr.category_id
+),
+
+-- Step 6: Aggregate margin by order
+order_margin AS (
+    SELECT
+        order_id,
+        SUM(gross_margin) AS total_gross_margin,
+        SUM(cost_price * quantity) AS total_cogs
+    FROM
+        product_detail
+    GROUP BY
+        order_id
+),
+
+-- Step 7: Resolve shipping carrier and delivery performance
+shipping_performance AS (
+    SELECT
+        s.order_id,
+        s.carrier_name,
+        s.service_level,
+        s.shipped_date,
+        s.delivered_date,
+        s.promised_delivery_date,
+        DATEDIFF(s.delivered_date, s.shipped_date) AS days_in_transit,
+        CASE
+            WHEN s.delivered_date <= s.promised_delivery_date THEN 'ON_TIME'
+            WHEN s.delivered_date IS NULL THEN 'IN_TRANSIT'
+            ELSE 'LATE'
+        END AS delivery_status,
+        s.shipping_cost
+    FROM
+        logistics.shipments s
+    INNER JOIN
+        filtered_orders fo ON fo.order_id = s.order_id
+),
+
+-- Step 8: Identify orders that had at least one return and compute return value
+return_summary AS (
+    SELECT
+        r.order_id,
+        COUNT(r.return_id)          AS return_count,
+        SUM(r.refund_amount)        AS total_refunded,
+        MAX(r.return_date)          AS last_return_date,
+        STRING_AGG(r.return_reason, ', ') AS return_reasons
+    FROM
+        sales.returns r
+    INNER JOIN
+        filtered_orders fo ON fo.order_id = r.order_id
+    GROUP BY
+        r.order_id
+),
+
+-- Step 9: Full order fact assembly
+order_fact AS (
+    SELECT
+        fo.order_id,
+        fo.order_date,
+        fo.order_month,
+        fo.channel,
+        fo.status,
+
+        -- Customer
+        cp.customer_id,
+        cp.first_name || ' ' || cp.last_name AS customer_name,
+        cp.acquisition_channel,
+        cp.segment_name,
+        cp.lifetime_value_tier,
+        cp.churn_risk_score,
+
+        -- Financials
+        ot.gross_revenue,
+        ot.total_discounts,
+        ot.net_revenue,
+        om.total_cogs,
+        om.total_gross_margin,
+        ROUND(om.total_gross_margin / NULLIF(ot.net_revenue, 0) * 100, 2) AS gross_margin_pct,
+
+        -- Promotion
+        ps.promotion_name,
+        ps.promotion_type,
+        ps.discount_rate AS promo_discount_rate,
+
+        -- Shipping
+        sp.carrier_name,
+        sp.service_level,
+        sp.days_in_transit,
+        sp.delivery_status,
+        sp.shipping_cost,
+
+        -- Returns
+        COALESCE(rs.return_count, 0)     AS return_count,
+        COALESCE(rs.total_refunded, 0)   AS total_refunded,
+        rs.return_reasons,
+
+        -- Net settled revenue after refunds
+        ot.net_revenue - COALESCE(rs.total_refunded, 0) AS settled_revenue,
+
+        ot.line_item_count,
+        ot.total_units
+    FROM
+        filtered_orders fo
+    INNER JOIN customer_profile  cp ON cp.customer_id     = fo.customer_id
+    INNER JOIN order_totals      ot ON ot.order_id        = fo.order_id
+    INNER JOIN order_margin      om ON om.order_id        = fo.order_id
+    LEFT JOIN  promotion_summary ps ON ps.promotion_id    = fo.promotion_id
+    LEFT JOIN  shipping_performance sp ON sp.order_id     = fo.order_id
+    LEFT JOIN  return_summary     rs ON rs.order_id       = fo.order_id
+)
+
+-- Step 10: Final rollup, one row per month / channel / segment / category
+SELECT
+    of.order_month,
+    of.channel,
+    of.segment_name,
+    of.lifetime_value_tier,
+    of.promotion_type,
+    of.delivery_status,
+    pd.parent_category_name,
+    pd.category_name,
+
+    COUNT(DISTINCT of.order_id)         AS total_orders,
+    COUNT(DISTINCT of.customer_id)      AS unique_customers,
+    SUM(of.gross_revenue)               AS gross_revenue,
+    SUM(of.total_discounts)             AS total_discounts,
+    SUM(of.net_revenue)                 AS net_revenue,
+    SUM(of.total_cogs)                  AS total_cogs,
+    SUM(of.total_gross_margin)          AS gross_margin,
+    ROUND(
+        SUM(of.total_gross_margin) / NULLIF(SUM(of.net_revenue), 0) * 100, 2
+    )                                   AS gross_margin_pct,
+    SUM(of.shipping_cost)               AS total_shipping_cost,
+    SUM(of.total_refunded)              AS total_refunded,
+    SUM(of.settled_revenue)             AS settled_revenue,
+    SUM(of.return_count)                AS total_returns,
+    ROUND(
+        SUM(of.return_count) * 1.0 / NULLIF(COUNT(DISTINCT of.order_id), 0) * 100, 2
+    )                                   AS return_rate_pct,
+    ROUND(SUM(of.net_revenue) / NULLIF(COUNT(DISTINCT of.order_id), 0), 2)
+                                        AS avg_order_value,
+    ROUND(AVG(of.churn_risk_score), 4)  AS avg_churn_risk,
+    ROUND(AVG(of.days_in_transit), 1)   AS avg_days_in_transit
+
+FROM
+    order_fact of
+INNER JOIN
+    product_detail pd ON pd.order_id = of.order_id
+
+GROUP BY
+    of.order_month,
+    of.channel,
+    of.segment_name,
+    of.lifetime_value_tier,
+    of.promotion_type,
+    of.delivery_status,
+    pd.parent_category_name,
+    pd.category_name
+
+ORDER BY
+    of.order_month ASC,
+    gross_revenue DESC;
+    """
+    
+    generate_isolated_dremio_lineage(sample_dremio_sql, "dremio_lineage_isolated_app.html")
