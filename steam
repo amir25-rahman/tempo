@@ -1,0 +1,1048 @@
+import os
+import re
+import json
+import hashlib
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+import sqlglot
+from sqlglot import parse_one, exp
+
+st.set_page_config(page_title="Interactive SQL Schema & Lineage Mapper", layout="wide")
+
+st.title("SQL Schema & Lineage Mapper")
+st.markdown("Visualize complete end-to-end lineage across base tables, subqueries, CTEs, and final output transformations.")
+
+DEFAULT_SQL = """WITH regional_sales AS (
+    SELECT 
+        region AS sales_region,
+        SUM(amount) AS total_sales,
+        store_id,
+        amount * 0.10 AS estimated_tax
+    FROM raw_orders
+    WHERE order_date = $[business_date] AND status = 'COMPLETED'
+    GROUP BY region, store_id, amount
+),
+store_info AS (
+    SELECT 
+        id AS store_id,
+        UPPER(store_name) AS formatted_store_name
+    FROM raw_stores
+)
+SELECT 
+    rs.sales_region,
+    rs.total_sales,
+    rs.estimated_tax,
+    si.formatted_store_name AS store_name
+FROM regional_sales rs
+JOIN store_info si ON rs.store_id = si.store_id;"""
+
+# -----------------------------------------------------------------------------
+# 1. Custom Cytoscape Component Bridge
+# -----------------------------------------------------------------------------
+COMPONENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cytoscape_component")
+os.makedirs(COMPONENT_DIR, exist_ok=True)
+
+HTML_CONTENT = """<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    :root {
+      --bg-canvas: #f4f5fb;
+      --ink: #1b1e2b;
+      --muted: #6b7089;
+      --primary: #6d5bf8;
+      --primary-dark: #4c3fd6;
+      --accent-up: #0ea5b7;
+      --accent-down: #1fb87a;
+      --focus: #ff8a3d;
+      --lock: #ef4770;
+      --surface: #ffffff;
+      --border: #e3e5f3;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: transparent; color: var(--ink); }
+    #toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .btn {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      box-shadow: 0 1px 2px rgba(27, 30, 43, 0.06);
+    }
+    .btn:hover { background: #f0eeff; border-color: var(--primary); color: var(--primary-dark); transform: translateY(-1px); box-shadow: 0 4px 10px rgba(109, 91, 248, 0.18); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+    .btn.btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border-color: transparent; color: #ffffff; box-shadow: 0 3px 10px rgba(109, 91, 248, 0.35); }
+    .btn.btn-primary:hover { filter: brightness(1.08); color: #ffffff; }
+    .btn.btn-locked { background: linear-gradient(135deg, var(--lock), #c92a5a); border-color: transparent; color: #ffffff; box-shadow: 0 3px 10px rgba(239, 71, 112, 0.4); }
+    .btn.btn-locked:hover { filter: brightness(1.08); color: #ffffff; }
+    #graphFilterInput {
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink);
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: 999px;
+      padding: 8px 16px;
+      min-width: 220px;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    #graphFilterInput:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(109, 91, 248, 0.15); }
+    #graphFilterInput::placeholder { color: #a3a6c2; }
+    #status { font-size: 13px; color: var(--muted); font-weight: 500; }
+    #cy { width: 100%; height: 530px; border: 1.5px solid var(--border); border-radius: 14px; background: radial-gradient(circle at 1px 1px, #e6e8f7 1px, var(--bg-canvas) 1px); background-size: 22px 22px; box-shadow: inset 0 1px 3px rgba(27, 30, 43, 0.04); }
+    #tooltip { position: fixed; display: none; background: #1b1e2b; color: #ffffff; font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; padding: 8px 12px; border-radius: 8px; max-width: 360px; word-wrap: break-word; pointer-events: none; z-index: 1000; box-shadow: 0 8px 24px rgba(27, 30, 43, 0.35); }
+  </style>
+</head>
+<body>
+<div id="toolbar">
+  <button class="btn" id="fitBtn">Fit View</button>
+  <button class="btn" id="resetBtn">Reset / Show All</button>
+  <button class="btn" id="lockBtn" disabled>Lock Node</button>
+  <input type="text" id="graphFilterInput" placeholder="Filter graph by table or column…" />
+  <button class="btn" id="clearFilterBtn" style="display:none;">Clear Filter</button>
+  <span id="status">Click any column node to isolate and re-arrange its full lineage path.</span>
+</div>
+<div id="cy"></div>
+<div id="tooltip"></div>
+
+<script>
+  function sendMessageToStreamlit(type, data) {
+    var outData = Object.assign({isStreamlitMessage: true, type: type}, data);
+    window.parent.postMessage(outData, "*");
+  }
+
+  function setComponentValue(value) {
+    sendMessageToStreamlit("streamlit:setComponentValue", {value: value});
+  }
+
+  function setFrameHeight(height) {
+    sendMessageToStreamlit("streamlit:setFrameHeight", {height: height});
+  }
+
+  var cy = null;
+  var allElements = null;
+  var currentSelectedId = null;
+  var lockedNodeId = null;
+  var FULL_LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 85, rankSep: 220, edgeSep: 35, animate: true, animationDuration: 350 };
+  var FOCUS_LAYOUT = { name: 'dagre', rankDir: 'LR', nodeSep: 95, rankSep: 250, edgeSep: 35, animate: true, animationDuration: 350, fit: true, padding: 40 };
+
+  function runLayout(layoutOptions) {
+    var l = cy.layout(layoutOptions);
+    l.run();
+    l.promiseOn('layoutstop').then(function() {
+      cy.animate({ fit: { padding: 30 } }, { duration: 200 });
+    });
+  }
+
+  function initCytoscape(elements) {
+    allElements = elements;
+
+    if (cy) {
+      cy.destroy();
+    }
+
+    cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: elements,
+      wheelSensitivity: 0.18,
+      minZoom: 0.15,
+      maxZoom: 3.0,
+      style: [
+        { selector: 'node[?isParent]', style: {
+            'background-color': '#ffffff',
+            'background-opacity': 0.6,
+            'border-width': 2,
+            'border-color': '#d7d9ef',
+            'border-style': 'dashed',
+            'shape': 'roundrectangle',
+            'corner-radius': '16',
+            'label': 'data(label)',
+            'text-valign': 'top',
+            'text-halign': 'center',
+            'text-margin-y': -6,
+            'font-family': 'Inter, sans-serif',
+            'font-size': '13px',
+            'font-weight': 700,
+            'color': '#4c3fd6',
+            'padding': '20px'
+        } },
+        { selector: 'node[!isParent]', style: {
+            'background-color': '#6d5bf8',
+            'label': 'data(label)',
+            'color': '#ffffff',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-family': 'Inter, sans-serif',
+            'font-size': '11.5px',
+            'font-weight': 600,
+            'shape': 'roundrectangle',
+            'corner-radius': '10',
+            'width': 'label',
+            'height': 'label',
+            'padding': '11px',
+            'border-width': 0,
+            'text-outline-width': 0
+        } },
+        { selector: 'edge', style: {
+            'width': 2.25,
+            'line-color': '#c7cae8',
+            'target-arrow-color': '#c7cae8',
+            'target-arrow-shape': 'triangle',
+            'arrow-scale': 1.1,
+            'curve-style': 'bezier',
+            'label': 'data(label)',
+            'font-family': 'Inter, sans-serif',
+            'font-size': '10px',
+            'font-weight': 500,
+            'text-rotation': '0deg',
+            'text-margin-y': -10,
+            'color': '#4b4f6b',
+            'text-wrap': 'wrap',
+            'text-max-width': '130px',
+            'text-background-color': '#ffffff',
+            'text-background-opacity': 0.95,
+            'text-background-padding': '4px',
+            'text-background-shape': 'roundrectangle',
+            'z-index': 10
+        } },
+        { selector: '.focused-node', style: {
+            'background-color': '#ff8a3d',
+            'color': '#ffffff',
+            'font-weight': 700,
+            'border-width': 3,
+            'border-color': '#ffffff',
+            'shadow-blur': 14,
+            'shadow-color': '#ff8a3d',
+            'shadow-opacity': 0.55,
+            'shadow-offset-x': 0,
+            'shadow-offset-y': 0
+        } },
+        { selector: '.locked-node', style: {
+            'border-width': 4,
+            'border-color': '#ef4770',
+            'border-style': 'solid',
+            'label': 'data(lockedLabel)',
+            'shadow-blur': 18,
+            'shadow-color': '#ef4770',
+            'shadow-opacity': 0.5,
+            'shadow-offset-x': 0,
+            'shadow-offset-y': 0
+        } },
+        { selector: '.upstream-node', style: { 'background-color': '#0ea5b7', 'color': '#ffffff' } },
+        { selector: '.downstream-node', style: { 'background-color': '#1fb87a', 'color': '#ffffff' } },
+        { selector: '.upstream-edge', style: { 'width': 3, 'line-color': '#0ea5b7', 'target-arrow-color': '#0ea5b7' } },
+        { selector: '.downstream-edge', style: { 'width': 3, 'line-color': '#1fb87a', 'target-arrow-color': '#1fb87a' } }
+      ],
+      layout: FULL_LAYOUT
+    });
+
+    cy.ready(function() {
+      cy.fit(30);
+    });
+
+    var lockBtn = document.getElementById('lockBtn');
+
+    function updateLockButton() {
+      if (lockedNodeId) {
+        lockBtn.disabled = false;
+        lockBtn.classList.add('btn-locked');
+        lockBtn.innerHTML = 'Locked: ' + lockedNodeId;
+      } else if (currentSelectedId) {
+        lockBtn.disabled = false;
+        lockBtn.classList.remove('btn-locked');
+        lockBtn.innerHTML = 'Lock Node';
+      } else {
+        lockBtn.disabled = true;
+        lockBtn.classList.remove('btn-locked');
+        lockBtn.innerHTML = 'Lock Node';
+      }
+    }
+
+    document.getElementById('fitBtn').onclick = function() {
+      cy.animate({ fit: { padding: 30 } }, { duration: 300 });
+    };
+
+    function clearSelection() {
+      if (!cy) return;
+      currentSelectedId = null;
+      lockedNodeId = null;
+      setComponentValue(null);
+      document.getElementById('status').innerText = "Click any column node to isolate and re-arrange its full lineage path.";
+
+      cy.elements().remove();
+      cy.add(allElements);
+      cy.elements().removeClass('focused-node locked-node upstream-node downstream-node upstream-edge downstream-edge');
+      runLayout(FULL_LAYOUT);
+      updateLockButton();
+
+      var filterInputEl = document.getElementById('graphFilterInput');
+      var clearFilterBtnEl = document.getElementById('clearFilterBtn');
+      if (filterInputEl) filterInputEl.value = '';
+      if (clearFilterBtnEl) clearFilterBtnEl.style.display = 'none';
+      activeFilterTerm = '';
+    }
+    document.getElementById('resetBtn').onclick = clearSelection;
+
+    lockBtn.onclick = function() {
+      if (lockBtn.disabled) return;
+      if (lockedNodeId) {
+        // Unlock: keep the current isolated view as-is, just allow navigation again.
+        lockedNodeId = null;
+        cy.elements().removeClass('locked-node');
+      } else if (currentSelectedId) {
+        // Lock the node currently in focus. Its lineage view is now pinned:
+        // clicking other nodes or blank canvas will not change or clear it
+        // until Unlock or Reset is pressed.
+        lockedNodeId = currentSelectedId;
+        var lockedNode = cy.getElementById(lockedNodeId);
+        lockedNode.data('lockedLabel', lockedNode.data('label'));
+        lockedNode.addClass('locked-node');
+        document.getElementById('status').innerText = "Locked on: " + lockedNodeId + ". Other clicks won't change this view until you Unlock or Reset.";
+      }
+      updateLockButton();
+    };
+
+    function isolateNode(node) {
+      var nodeId = node.data('id');
+      currentSelectedId = nodeId;
+
+      var predecessors = node.predecessors();
+      var successors = node.successors();
+
+      var upstreamNodes = predecessors.nodes();
+      var upstreamEdges = predecessors.edges();
+      var downstreamNodes = successors.nodes();
+      var downstreamEdges = successors.edges();
+
+      // Build the induced subgraph: the clicked node, everything upstream/downstream
+      // of it, plus their compound parent containers. Everything else is removed
+      // from the canvas entirely (not just faded) so the layout engine only has
+      // to arrange the relevant lineage path - no more panning through clutter.
+      var keepNodes = node.union(upstreamNodes).union(downstreamNodes);
+      var keepParents = keepNodes.parents();
+      var keepElements = keepNodes.union(upstreamEdges).union(downstreamEdges).union(keepParents);
+
+      var upstreamIds = upstreamNodes.map(function(n) { return n.id(); });
+      var downstreamIds = downstreamNodes.map(function(n) { return n.id(); });
+      var upstreamEdgeIds = upstreamEdges.map(function(e) { return e.id(); });
+      var downstreamEdgeIds = downstreamEdges.map(function(e) { return e.id(); });
+
+      cy.elements().remove();
+      cy.add(keepElements.jsons());
+
+      cy.getElementById(nodeId).addClass('focused-node');
+      cy.nodes().filter(function(n) { return upstreamIds.indexOf(n.id()) !== -1; }).addClass('upstream-node');
+      cy.edges().filter(function(e) { return upstreamEdgeIds.indexOf(e.id()) !== -1; }).addClass('upstream-edge');
+      cy.nodes().filter(function(n) { return downstreamIds.indexOf(n.id()) !== -1; }).addClass('downstream-node');
+      cy.edges().filter(function(e) { return downstreamEdgeIds.indexOf(e.id()) !== -1; }).addClass('downstream-edge');
+
+      runLayout(FOCUS_LAYOUT);
+
+      document.getElementById('status').innerText = "Showing isolated lineage for: " + nodeId + " (" + upstreamNodes.length + " upstream, " + downstreamNodes.length + " downstream). Click Reset to see the full graph again.";
+      setComponentValue(nodeId);
+      updateLockButton();
+    }
+
+    // --- Graph filter: hide non-matching column nodes (by id, label, or full
+    // label) and any edges left dangling once their endpoint is hidden. Works
+    // on top of whatever is currently on the canvas (full graph, isolated
+    // view, or locked view) rather than replacing it.
+    var graphFilterInput = document.getElementById('graphFilterInput');
+    var clearFilterBtn = document.getElementById('clearFilterBtn');
+    var activeFilterTerm = '';
+
+    function applyGraphFilter(term) {
+      activeFilterTerm = term.trim().toLowerCase();
+      cy.batch(function() {
+        cy.elements().show();
+
+        if (!activeFilterTerm) {
+          clearFilterBtn.style.display = 'none';
+          return;
+        }
+        clearFilterBtn.style.display = 'inline-block';
+
+        var columnNodes = cy.nodes('[!isParent]');
+        var matches = columnNodes.filter(function(n) {
+          var d = n.data();
+          var haystack = (d.id + ' ' + (d.label || '') + ' ' + (d.fullLabel || '')).toLowerCase();
+          return haystack.indexOf(activeFilterTerm) !== -1;
+        });
+
+        var nonMatches = columnNodes.difference(matches);
+        nonMatches.hide();
+
+        // Hide any edge that lost an endpoint, and any parent container left
+        // with no visible column nodes inside it.
+        cy.edges().forEach(function(e) {
+          if (e.source().hidden() || e.target().hidden()) {
+            e.hide();
+          }
+        });
+        cy.nodes('[?isParent]').forEach(function(p) {
+          var visibleChildren = p.children().filter(function(c) { return !c.hidden(); });
+          if (visibleChildren.length === 0) {
+            p.hide();
+          }
+        });
+      });
+
+      var visibleCount = cy.nodes('[!isParent]').filter(function(n) { return !n.hidden(); }).length;
+      document.getElementById('status').innerText = activeFilterTerm
+        ? 'Filtering graph for ' + term.trim() + ' - ' + visibleCount + ' matching column(s) shown.'
+        : document.getElementById('status').innerText;
+
+      if (activeFilterTerm && visibleCount > 0) {
+        cy.animate({ fit: { eles: cy.elements(':visible'), padding: 60 } }, { duration: 250 });
+      }
+    }
+
+    graphFilterInput.addEventListener('input', function() {
+      applyGraphFilter(graphFilterInput.value);
+    });
+    clearFilterBtn.onclick = function() {
+      graphFilterInput.value = '';
+      applyGraphFilter('');
+    };
+
+    cy.on('tap', function(evt) {
+      if (evt.target === cy && !lockedNodeId) {
+        clearSelection();
+      }
+    });
+
+    cy.on('tap', 'node', function(evt) {
+      var node = evt.target;
+      if (node.data('isParent')) {
+        return;
+      }
+
+      if (lockedNodeId) {
+        // Locked mode: the graph view itself stays pinned on the locked
+        // node's lineage. Clicking another node here doesn't change what's
+        // drawn - it just tells the synced data table below to bring that
+        // node's rows to the top, so you can trace a hop without losing
+        // your place in the diagram.
+        var pinNodeId = node.data('id');
+        setComponentValue({ nodeId: pinNodeId, mode: 'pin' });
+        document.getElementById('status').innerText = "Locked on: " + lockedNodeId + ". Highlighting " + pinNodeId + " in the table below - other clicks won't change this view until you Unlock or Reset.";
+        return;
+      }
+
+      var nodeId = node.data('id');
+      if (currentSelectedId === nodeId) return;
+
+      isolateNode(node);
+    });
+
+    // Long expressions are truncated on the canvas to prevent overlap; show the
+    // full text in a hover tooltip so nothing readable is actually lost.
+    var tooltip = document.getElementById('tooltip');
+
+    function showTooltip(evt, text) {
+      if (!text) return;
+      tooltip.innerText = text;
+      tooltip.style.display = 'block';
+      positionTooltip(evt);
+    }
+
+    function positionTooltip(evt) {
+      var oe = evt.originalEvent;
+      if (!oe) return;
+      tooltip.style.left = (oe.clientX + 14) + 'px';
+      tooltip.style.top = (oe.clientY + 14) + 'px';
+    }
+
+    function hideTooltip() {
+      tooltip.style.display = 'none';
+    }
+
+    cy.on('mouseover', 'edge', function(evt) {
+      showTooltip(evt, evt.target.data('fullLabel'));
+    });
+    cy.on('mousemove', 'edge', positionTooltip);
+    cy.on('mouseout', 'edge', hideTooltip);
+
+    cy.on('mouseover', 'node[!isParent]', function(evt) {
+      var d = evt.target.data();
+      var text = d.fullLabel && d.fullLabel !== d.label ? (d.id + " (" + d.fullLabel + ")") : d.id;
+      showTooltip(evt, text);
+    });
+    cy.on('mousemove', 'node[!isParent]', positionTooltip);
+    cy.on('mouseout', 'node[!isParent]', hideTooltip);
+  }
+
+  window.addEventListener("message", function(event) {
+    if (event.data.type === "streamlit:render") {
+      var elements = event.data.args.elements;
+      initCytoscape(elements);
+      setFrameHeight(600);
+    }
+  });
+
+  sendMessageToStreamlit("streamlit:componentReady", {apiVersion: 1});
+</script>
+</body>
+</html>"""
+
+with open(os.path.join(COMPONENT_DIR, "index.html"), "w", encoding="utf-8") as f:
+    f.write(HTML_CONTENT)
+
+cytoscape_component = components.declare_component("cytoscape_lineage", path=COMPONENT_DIR)
+
+# -----------------------------------------------------------------------------
+# 2. SQL Parsing Engine
+# -----------------------------------------------------------------------------
+
+def get_with_clause(select_expr):
+    """sqlglot renamed the 'with' arg key to 'with_' in newer releases.
+    Support both so this works across sqlglot versions."""
+    return select_expr.args.get("with_") or select_expr.args.get("with")
+
+
+def get_from_clause(select_expr):
+    """sqlglot renamed the 'from' arg key to 'from_' in newer releases.
+    Support both so this works across sqlglot versions."""
+    return select_expr.args.get("from_") or select_expr.args.get("from")
+
+
+def sanitize_placeholders(sql_str):
+    pattern = r"\$\[([a-zA-Z0-9_]+)\]"
+    return re.sub(pattern, r"'PLACEHOLDER_\1'", sql_str)
+
+def classify_transform_and_rename(orig_col, target_col, source_expr, is_alias):
+    has_agg = bool(source_expr.find(exp.AggFunc))
+    source_cols = list(source_expr.find_all(exp.Column))
+
+    if has_agg:
+        return "AGGREGATION", f"AGGREGATION ({source_expr.sql()})"
+    elif isinstance(source_expr, exp.Column):
+        if orig_col != target_col:
+            return "RENAME", f"RENAMED ({orig_col} -> {target_col})"
+        else:
+            return "DIRECT_COPY", "DIRECT_COPY"
+    elif source_cols:
+        return "CALCULATED_EXPRESSION", f"CALCULATED ({source_expr.sql()})"
+    else:
+        return "CONSTANT", f"CONSTANT ({source_expr.sql()})"
+
+def get_clean_table_map(select_expr):
+    """Maps table aliases (e.g. 'rs', 'si') to actual table or CTE names as clean strings.
+
+    Only scans the FROM and JOIN clauses that belong to this exact SELECT.
+    Using select_expr.find_all(exp.Table) would also recurse into any WITH
+    clause attached to this same Select node (sqlglot stores 'with_' as an
+    arg on the Select itself), pulling in unrelated table names from CTE
+    bodies and corrupting the 'single table' fallback used below.
+    """
+    tables_map = {}
+
+    def register(tbl):
+        real_name = str(tbl.name) if tbl.name else ""
+        alias_name = str(tbl.alias_or_name) if tbl.alias else ""
+        if real_name:
+            tables_map[real_name] = real_name
+            if alias_name:
+                tables_map[alias_name] = real_name
+
+    from_clause = get_from_clause(select_expr)
+    if from_clause:
+        for tbl in from_clause.find_all(exp.Table):
+            register(tbl)
+
+    for join in select_expr.args.get("joins", []):
+        for tbl in join.find_all(exp.Table):
+            register(tbl)
+
+    return tables_map
+
+def parse_sql_query(sql_query):
+    if not sql_query or not sql_query.strip():
+        return None, None, None, "Please enter a SQL query to visualize."
+
+    sanitized = sanitize_placeholders(sql_query)
+    try:
+        parsed = parse_one(sanitized)
+    except Exception as e:
+        return None, None, None, f"SQL Parsing Error: {str(e)}"
+
+    if not parsed:
+        return None, None, None, "Unable to parse SQL string."
+
+    if not isinstance(parsed, exp.Select):
+        return None, None, None, (
+            f"This tool visualizes SELECT-based lineage. Detected a "
+            f"'{type(parsed).__name__}' statement instead, which isn't supported."
+        )
+
+    mappings = []
+    query_structure = {"joins": [], "filters": [], "group_by": []}
+    cte_names = set()
+
+    # Track CTE names
+    with_clause = get_with_clause(parsed)
+    if with_clause:
+        for cte in with_clause.expressions:
+            cte_name = str(cte.alias_or_name or cte.alias or cte.name)
+            cte_names.add(cte_name)
+
+    def extract_scope_details(select_expr, scope_name):
+        if not isinstance(select_expr, exp.Select):
+            return
+
+        # 1. Recursively extract subqueries in FROM / JOIN
+        from_clause = get_from_clause(select_expr)
+        if from_clause and from_clause.this:
+            if isinstance(from_clause.this, (exp.Subquery, exp.Select)):
+                sub_select = from_clause.this.this if isinstance(from_clause.this, exp.Subquery) else from_clause.this
+                sub_alias = str(from_clause.this.alias_or_name or f"SUBQUERY_{scope_name}")
+                extract_scope_details(sub_select, scope_name=sub_alias)
+
+        for join in select_expr.args.get("joins", []):
+            j_this = join.this
+            if isinstance(j_this, (exp.Subquery, exp.Select)):
+                sub_select = j_this.this if isinstance(j_this, exp.Subquery) else j_this
+                sub_alias = str(j_this.alias_or_name or f"SUBQUERY_{scope_name}")
+                extract_scope_details(sub_select, scope_name=sub_alias)
+
+        tables_map = get_clean_table_map(select_expr)
+
+        # 2. Extract Joins Logic
+        for join in select_expr.args.get("joins", []):
+            j_tbl = join.this
+            j_name = j_tbl.name if isinstance(j_tbl, exp.Table) else j_tbl.sql()
+            j_alias = str(j_tbl.alias_or_name) if hasattr(j_tbl, "alias_or_name") else ""
+            
+            resolved_j_name = tables_map.get(j_alias, tables_map.get(j_name, j_name))
+
+            query_structure["joins"].append({
+                "Scope": scope_name,
+                "Join Type": join.args.get("side", "INNER") or "INNER",
+                "Table": j_tbl.sql(),
+                "Joined Name": resolved_j_name,
+                "Joined Alias": j_alias,
+                "On Condition": join.args.get("on").sql() if join.args.get("on") else "N/A"
+            })
+
+        # 3. Extract WHERE Filters
+        where_clause = select_expr.args.get("where")
+        if where_clause:
+            query_structure["filters"].append({
+                "Scope": scope_name,
+                "Condition": where_clause.this.sql()
+            })
+
+        # 4. Extract GROUP BY
+        group_clause = select_expr.args.get("group")
+        if group_clause:
+            query_structure["group_by"].append({
+                "Scope": scope_name,
+                "Group Keys": [g.sql() for g in group_clause.expressions]
+            })
+
+        # 5. Extract Column Level Transformations
+        for expression in select_expr.expressions:
+            is_alias = False
+            if isinstance(expression, exp.Star):
+                # SELECT * has no individual column mapping to trace - surface it
+                # explicitly instead of misclassifying it as a literal/constant.
+                mappings.append({
+                    "Source Table": "ALL_COLUMNS",
+                    "Original Column": "*",
+                    "Target Scope": scope_name,
+                    "Target Column": "*",
+                    "Transform Type": "PASSTHROUGH_STAR",
+                    "Rename Indicator": "SELECT * (all upstream columns pass through unchanged)",
+                    "Expression": "*"
+                })
+                continue
+            if isinstance(expression, exp.Alias):
+                target_col = str(expression.alias)
+                source_expr = expression.this
+                is_alias = True
+            elif isinstance(expression, exp.Column):
+                target_col = str(expression.name)
+                source_expr = expression
+            else:
+                target_col = str(expression.sql())
+                source_expr = expression
+
+            source_cols = list(source_expr.find_all(exp.Column))
+
+            if not source_cols:
+                transform_type, rename_indicator = classify_transform_and_rename(
+                    orig_col=source_expr.sql(),
+                    target_col=target_col,
+                    source_expr=source_expr,
+                    is_alias=is_alias
+                )
+                mappings.append({
+                    "Source Table": "LITERAL/EXPRESSION",
+                    "Original Column": source_expr.sql(),
+                    "Target Scope": scope_name,
+                    "Target Column": target_col,
+                    "Transform Type": transform_type,
+                    "Rename Indicator": rename_indicator,
+                    "Expression": source_expr.sql()
+                })
+            else:
+                for col in source_cols:
+                    table_ref = str(col.table) if col.table else ""
+                    if table_ref:
+                        resolved_table = tables_map.get(table_ref, table_ref)
+                    else:
+                        unique_tables = list(set(tables_map.values()))
+                        resolved_table = unique_tables[0] if len(unique_tables) == 1 else "UNKNOWN"
+
+                    orig_col_name = str(col.name)
+
+                    transform_type, rename_indicator = classify_transform_and_rename(
+                        orig_col=orig_col_name,
+                        target_col=target_col,
+                        source_expr=source_expr,
+                        is_alias=is_alias
+                    )
+
+                    mappings.append({
+                        "Source Table": resolved_table,
+                        "Original Column": orig_col_name,
+                        "Target Scope": scope_name,
+                        "Target Column": target_col,
+                        "Transform Type": transform_type,
+                        "Rename Indicator": rename_indicator,
+                        "Expression": source_expr.sql()
+                    })
+
+    try:
+        # Execute CTE Extraction
+        if with_clause:
+            for cte in with_clause.expressions:
+                cte_scope_name = str(cte.alias_or_name or cte.alias or cte.name)
+                if isinstance(cte.this, exp.Select):
+                    extract_scope_details(cte.this, scope_name=cte_scope_name)
+
+        # Execute Final Output SELECT Extraction
+        extract_scope_details(parsed, scope_name="FINAL_OUTPUT")
+    except Exception as e:
+        return None, None, None, (
+            f"Unexpected error while analyzing query structure: {str(e)}. "
+            f"This can happen with SQL constructs (e.g. window functions, "
+            f"UNION, nested CTEs) not yet supported by this visualizer."
+        )
+
+    if not mappings:
+        return None, None, None, (
+            "No column-level mappings were found. The query parsed successfully "
+            "but produced no traceable SELECT expressions."
+        )
+
+    df = pd.DataFrame(mappings).drop_duplicates().reset_index(drop=True)
+    return df, query_structure, cte_names, None
+
+# -----------------------------------------------------------------------------
+# 3. Directed Multi-Hop Lineage Filtering Engine
+# -----------------------------------------------------------------------------
+def filter_df_by_selected_lineage(df, selected_node_id):
+    if not selected_node_id:
+        return df
+
+    upstream_nodes = {selected_node_id}
+    added = True
+    while added:
+        added = False
+        for _, row in df.iterrows():
+            src_id = f"{row['Source Table']}.{row['Original Column']}"
+            tgt_id = f"{row['Target Scope']}.{row['Target Column']}"
+            if tgt_id in upstream_nodes and src_id not in upstream_nodes:
+                upstream_nodes.add(src_id)
+                added = True
+
+    downstream_nodes = {selected_node_id}
+    added = True
+    while added:
+        added = False
+        for _, row in df.iterrows():
+            src_id = f"{row['Source Table']}.{row['Original Column']}"
+            tgt_id = f"{row['Target Scope']}.{row['Target Column']}"
+            if src_id in downstream_nodes and tgt_id not in downstream_nodes:
+                downstream_nodes.add(tgt_id)
+                added = True
+
+    def is_lineage_row(row):
+        src_id = f"{row['Source Table']}.{row['Original Column']}"
+        tgt_id = f"{row['Target Scope']}.{row['Target Column']}"
+        return ((src_id in upstream_nodes) and (tgt_id in upstream_nodes)) or \
+               ((src_id in downstream_nodes) and (tgt_id in downstream_nodes))
+
+    mask = df.apply(is_lineage_row, axis=1)
+    return df[mask]
+
+def sort_df_pin_node_to_top(df, pin_node_id):
+    """Keep every row visible (unlike filter_df_by_selected_lineage, which
+    drops unrelated rows) but reorder so rows directly touching pin_node_id
+    - as either source or target - float to the top. Used for the
+    click-to-pin interaction while the graph view is locked, so a hop can be
+    traced in the table without losing the rest of the lineage context."""
+    if df is None or df.empty or not pin_node_id:
+        return df
+
+    def touches_pin(row):
+        src_id = f"{row['Source Table']}.{row['Original Column']}"
+        tgt_id = f"{row['Target Scope']}.{row['Target Column']}"
+        return src_id == pin_node_id or tgt_id == pin_node_id
+
+    is_pinned = df.apply(touches_pin, axis=1)
+    return pd.concat([df[is_pinned], df[~is_pinned]], ignore_index=True)
+
+def filter_structural_logic(structure, table_df):
+    if table_df is None or table_df.empty:
+        return {"joins": [], "filters": [], "group_by": []}
+
+    active_target_scopes = set(table_df["Target Scope"].unique())
+    active_source_tables = set(table_df["Source Table"].unique())
+
+    filtered_joins = []
+    for j in structure["joins"]:
+        if j["Scope"] in active_target_scopes:
+            j_name = j.get("Joined Name", "")
+            j_alias = j.get("Joined Alias", "")
+            if j_name in active_source_tables or j_alias in active_source_tables:
+                filtered_joins.append({
+                    "Scope": j["Scope"],
+                    "Join Type": j["Join Type"],
+                    "Table": j["Table"],
+                    "On Condition": j["On Condition"]
+                })
+
+    filtered_filters = [
+        {"Scope": f["Scope"], "Condition": f["Condition"]}
+        for f in structure["filters"] if f["Scope"] in active_target_scopes
+    ]
+
+    filtered_group_by = [
+        {"Scope": g["Scope"], "Group Keys": g["Group Keys"]}
+        for g in structure["group_by"] if g["Scope"] in active_target_scopes
+    ]
+
+    return {
+        "joins": filtered_joins,
+        "filters": filtered_filters,
+        "group_by": filtered_group_by
+    }
+
+# -----------------------------------------------------------------------------
+# 4. Streamlit UI
+# -----------------------------------------------------------------------------
+sql_input = st.text_area("SQL Query Input", value=DEFAULT_SQL, height=220)
+
+if not sql_input.strip():
+    st.info("Enter a SQL query above to visualize its lineage.")
+else:
+    df_mappings, structure, cte_names, error = parse_sql_query(sql_input)
+
+    if error:
+        st.error(error)
+    elif df_mappings is None or df_mappings.empty:
+        st.warning("No lineage could be extracted from this query.")
+    else:
+
+        def truncate_label(text, max_chars):
+            text = str(text)
+            if len(text) <= max_chars:
+                return text
+            return text[:max_chars - 1].rstrip() + "…"
+
+        NODE_LABEL_MAX_CHARS = 22
+
+        nodes = []
+        edges = []
+        added_parents = set()
+        added_nodes = set()
+
+        for idx, row in df_mappings.iterrows():
+            src_parent = f"parent_{row['Source Table']}"
+            tgt_parent = f"parent_{row['Target Scope']}"
+            
+            src_node_id = f"{row['Source Table']}.{row['Original Column']}"
+            tgt_node_id = f"{row['Target Scope']}.{row['Target Column']}"
+
+            # Label Containers
+            if row['Source Table'] == 'FINAL_OUTPUT':
+                src_label = "Output: FINAL_OUTPUT"
+            elif row['Source Table'] in cte_names:
+                src_label = f"CTE: {row['Source Table']}"
+            else:
+                src_label = f"Table: {row['Source Table']}"
+
+            if row['Target Scope'] == 'FINAL_OUTPUT':
+                tgt_label = "Output: FINAL_OUTPUT"
+            elif row['Target Scope'] in cte_names:
+                tgt_label = f"CTE: {row['Target Scope']}"
+            else:
+                tgt_label = f"Table: {row['Target Scope']}"
+
+            if src_parent not in added_parents:
+                nodes.append({"data": {"id": src_parent, "label": src_label, "isParent": True}})
+                added_parents.add(src_parent)
+            
+            if tgt_parent not in added_parents:
+                nodes.append({"data": {"id": tgt_parent, "label": tgt_label, "isParent": True}})
+                added_parents.add(tgt_parent)
+
+            if src_node_id not in added_nodes:
+                nodes.append({"data": {
+                    "id": src_node_id,
+                    "label": truncate_label(row['Original Column'], NODE_LABEL_MAX_CHARS),
+                    "fullLabel": str(row['Original Column']),
+                    "parent": src_parent
+                }})
+                added_nodes.add(src_node_id)
+
+            if tgt_node_id not in added_nodes:
+                nodes.append({"data": {
+                    "id": tgt_node_id,
+                    "label": truncate_label(row['Target Column'], NODE_LABEL_MAX_CHARS),
+                    "fullLabel": str(row['Target Column']),
+                    "parent": tgt_parent
+                }})
+                added_nodes.add(tgt_node_id)
+
+            if row['Transform Type'] == 'RENAME':
+                edge_label = f"RENAME ({row['Original Column']} -> {row['Target Column']})"
+            elif row['Transform Type'] == 'AGGREGATION':
+                edge_label = f"AGGREGATION ({row['Expression']})"
+            elif row['Transform Type'] == 'CALCULATED_EXPRESSION':
+                edge_label = f"CALCULATED ({row['Expression']})"
+            else:
+                edge_label = row['Transform Type']
+
+            # Long expressions (e.g. CASE WHEN..., nested functions) make the
+            # on-canvas edge label unreadable and cause overlap with neighboring
+            # elements. Show a truncated version on the graph and keep the full
+            # text available via the node/edge tooltip (title on hover).
+            full_edge_label = edge_label
+            edge_label = truncate_label(edge_label, 42)
+
+            edges.append({
+                "data": {
+                    "id": f"e_{idx}",
+                    "source": src_node_id,
+                    "target": tgt_node_id,
+                    "label": edge_label,
+                    "fullLabel": full_edge_label
+                }
+            })
+
+        st.subheader("1. Interactive Visual Lineage")
+        # Python's built-in hash() is randomized per-process (PYTHONHASHSEED),
+        # so it would change on every app restart and needlessly reset the
+        # component's selection state. Use a stable content hash instead.
+        stable_hash = hashlib.md5(sql_input.encode("utf-8")).hexdigest()
+        comp_key = f"cytoscape_{stable_hash}"
+        component_value = cytoscape_component(elements={"nodes": nodes, "edges": edges}, key=comp_key)
+
+        # The component sends either a plain node-id string (normal isolate
+        # click - hard-filter the tabs to just that lineage path) or a
+        # {nodeId, mode: 'pin'} object (a click while the graph view is
+        # locked - keep every row visible, just float that node's rows to
+        # the top so it's easy to spot without losing the rest of the
+        # context).
+        selected_node_id = None
+        pin_node_id = None
+        if isinstance(component_value, dict):
+            pin_node_id = component_value.get("nodeId")
+        elif component_value:
+            selected_node_id = component_value
+
+        st.subheader("2. Synced Interactive Schema Details")
+
+        if selected_node_id:
+            st.info(f"Filtering all tabs for lineage path of: **`{selected_node_id}`**")
+            table_df = filter_df_by_selected_lineage(df_mappings, selected_node_id)
+            filtered_structure = filter_structural_logic(structure, table_df)
+        elif pin_node_id:
+            st.info(f"Pinned to top: **`{pin_node_id}`** (locked view - showing all rows, this node's first)")
+            table_df = sort_df_pin_node_to_top(df_mappings, pin_node_id)
+            filtered_structure = structure
+        else:
+            table_df = df_mappings
+            filtered_structure = structure
+
+        tab1, tab2, tab3 = st.tabs(["Column Transformations", "Joins Logic", "Filters & Groupings"])
+
+        with tab1:
+            search_col, download_col = st.columns([3, 1])
+            with search_col:
+                search_term = st.text_input(
+                    "Search transformations",
+                    placeholder="Filter by table, column, or expression…",
+                    label_visibility="collapsed"
+                )
+
+            display_df = table_df
+            if search_term:
+                mask = table_df.apply(
+                    lambda row: row.astype(str).str.contains(search_term, case=False, regex=False).any(),
+                    axis=1
+                )
+                display_df = table_df[mask]
+
+            with download_col:
+                st.download_button(
+                    "Download CSV",
+                    data=display_df.to_csv(index=False).encode("utf-8"),
+                    file_name="sql_lineage_mappings.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+            if search_term and display_df.empty:
+                st.info(f"No transformations match '{search_term}'.")
+            else:
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        with tab2:
+            if filtered_structure["joins"]:
+                st.dataframe(pd.DataFrame(filtered_structure["joins"]), use_container_width=True, hide_index=True)
+            else:
+                st.info("No relevant JOIN clauses for this selection.")
+
+        with tab3:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("#### WHERE Filter Conditions")
+                if filtered_structure["filters"]:
+                    st.dataframe(pd.DataFrame(filtered_structure["filters"]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No relevant WHERE filters for this selection.")
+
+            with col_b:
+                st.markdown("#### GROUP BY Clauses")
+                if filtered_structure["group_by"]:
+                    st.dataframe(pd.DataFrame(filtered_structure["group_by"]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No relevant GROUP BY clauses for this selection.")
+
+
+
+
+
+
+
+
+
+#streamlit run app.py
